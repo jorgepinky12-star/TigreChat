@@ -1,0 +1,57 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode — user state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode — schemes y workspaces de usuario
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# CocoaPods (si se adopta en el futuro)
+Pods/
+*.xcworkspace/xcshareddata/Pods
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/summary.html
+fastlane/Driver.log
+fastlane/scan.html
+fastlane/test_output/
+fastlane/screenshots/**/*.png
+
+# Signing / provision
+*.mobileprovision
+*.provisionprofile
+
+# Instruments
+*.trace
+
+# Playgrounds
+*.playground/playground.xcworkspace/xcuserdata/
+
+# Archivos temporales
+tmp/
+temp/
+*.swp
+*~
+
+# Logs
+*.log
