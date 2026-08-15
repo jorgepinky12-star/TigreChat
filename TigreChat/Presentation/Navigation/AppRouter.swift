@@ -33,14 +33,9 @@ struct AppRouter: View {
     /// After the OTP is verified the backend has provisioned an ejabberd
     /// account for the phone number: connect to the IM server with those
     /// credentials (they are persisted in the Keychain by the repository),
-    /// then enter the chat list. Demo mode seeds a local roster and enters
-    /// the chat list without the network (temporary, see DemoRosterSeeder).
+    /// then enter the chat list. Demo mode uses the demo account's stored
+    /// credentials (`jorge@ims-brz.z17.cu`) through the same real path.
     private func provisionAndConnect(_ credentials: AuthCredentials) async throws {
-        guard !credentials.isDemo else {
-            await DemoRosterSeeder(modelContainer: deps.modelContainer).seedIfNeeded()
-            isLoggedIn = true
-            return
-        }
         let domain = credentials.jid.split(separator: "@").last.map(String.init)
             ?? AuthServiceFactory.config.xmppDomain
         // Misma lógica de estrategias que el login manual (SRV + fallbacks de

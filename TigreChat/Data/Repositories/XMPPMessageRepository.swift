@@ -71,7 +71,11 @@ final class XMPPMessageRepository: MessageRepository {
 
     private func updateConversationPreview(_ message: Message, incrementUnread: Bool = true) {
         let preview = message.attachment.map { $0.displayFileName } ?? message.text
-        let jid = message.isOutgoing ? message.conversationId : message.senderJID
+        // La conversación SIEMPRE se identifica por el JID desnudo: el
+        // /resource (dispositivo) no debe duplicar la lista ni el historial.
+        // (Antes se usaba `senderJID`, que conserva el /resource, con lo que
+        // cada dispositivo del contacto creaba una conversación repetida.)
+        let jid = bareJID(message.conversationId)
         let fetch = FetchDescriptor<ConversationEntity>(
             predicate: #Predicate { $0.jid == jid }
         )
@@ -199,11 +203,70 @@ final class XMPPMessageRepository: MessageRepository {
 
     func loadConversations() async throws -> [Conversation] {
         try? syncRosterConversations()
+        await normalizeLegacyConversationData()
         let descriptor = FetchDescriptor<ConversationEntity>(
             sortBy: [SortDescriptor(\.lastTimestamp, order: .reverse)]
         )
         let entities = try modelContext.fetch(descriptor)
         return entities.map { $0.toDomain() }
+    }
+
+    /// Normaliza un JID a su forma desnuda (sin `/resource`). En 1:1 y MUC el
+    /// recurso solo identifica el dispositivo/nick del remitente, nunca la
+    /// conversación; por eso las claves de conversación van siempre en bare.
+    private func bareJID(_ jid: String) -> String {
+        guard jid.contains("@") else { return jid }
+        return jid.components(separatedBy: "/").first ?? jid
+    }
+
+    /// Migración de datos viejos (idempotente): antes del fix de IDs, los
+    /// mensajes y conversaciones podían guardar el JID con `/resource`, lo que
+    /// (1) pintaba el mismo contacto varias veces en la lista de chats y
+    /// (2) dejaba el historial "vacío" al abrir la conversación, porque
+    /// `loadMessages` matchea el JID desnudo exacto. Esta pasada reescribe los
+    /// `conversationId` a su forma desnuda y fusiona las conversaciones
+    /// repetidas en una sola.
+    func normalizeLegacyConversationData() async {
+        let allMessages = (try? modelContext.fetch(FetchDescriptor<MessageEntity>())) ?? []
+        var changed = false
+        for entity in allMessages {
+            let bare = bareJID(entity.conversationId)
+            if bare != entity.conversationId {
+                entity.conversationId = bare
+                changed = true
+            }
+        }
+
+        let allConversations = (try? modelContext.fetch(FetchDescriptor<ConversationEntity>())) ?? []
+        var byBare: [String: [ConversationEntity]] = [:]
+        for conv in allConversations {
+            byBare[bareJID(conv.jid), default: []].append(conv)
+        }
+        for (bare, group) in byBare where group.count > 1 {
+            // Base: la que ya usa el JID desnudo si existe; si no, la primera.
+            guard let base = group.first(where: { $0.jid == bare }) ?? group.first else { continue }
+            var latest = base.lastTimestamp ?? .distantPast
+            var lastMessage = base.lastMessage
+            var unread = base.unreadCount
+            for conv in group where conv !== base {
+                if let ts = conv.lastTimestamp, ts > latest {
+                    latest = ts
+                    lastMessage = conv.lastMessage
+                }
+                unread = max(unread, conv.unreadCount)
+                if conv.isGroup { base.isGroup = true }
+                if conv.omemoEnabled { base.omemoEnabled = true }
+                if base.title.isEmpty { base.title = conv.title }
+                modelContext.delete(conv)
+            }
+            if base.jid != bare { base.jid = bare }
+            base.lastTimestamp = latest == .distantPast ? nil : latest
+            base.lastMessage = lastMessage
+            base.unreadCount = unread
+            changed = true
+        }
+
+        if changed { try? modelContext.save() }
     }
 
     /// Garantiza que todo contacto real del roster tenga su conversación en

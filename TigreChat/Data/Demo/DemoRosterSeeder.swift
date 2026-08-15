@@ -1,15 +1,13 @@
 import Foundation
 import SwiftData
 
-/// Seeds a local demo roster (contacts + conversations + messages) for the
-/// demo login flow.
+/// Seeds a local demo roster (contacts + conversations + messages) for
+/// exercising the chat UI without a server connection.
 ///
-/// TEMPORARY: while the demo login cannot reach the real XMPP server with a
-/// provisioned roster, the demo mode navigates straight to the chat list with
-/// seeded local data so the UI can be exercised. Remove once the SMS backend
-/// provisions accounts and the real connection path (XMPPConnectionStrategies)
-/// carries the roster; the demo flow then goes back to `guard
-/// !credentials.isDemo`.
+/// TEMPORARY: kept as a local utility. The demo login now connects to the
+/// real IM server with the demo account (`jorge@ims-brz.z17.cu`) and the
+/// server roster arrives through the normal XMPP path, so the router no
+/// longer calls this seeder. Remove once the SMS backend lands.
 @MainActor
 final class DemoRosterSeeder {
     private let modelContext: ModelContext

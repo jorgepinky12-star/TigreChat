@@ -207,9 +207,21 @@ actor XMPPMAMManager {
         let to = attrs["to"] ?? ""
         let id = attrs["id"] ?? UUID().uuidString
         let type = attrs["type"] ?? "chat"
-        let conversationId = type == "groupchat"
-            ? from.components(separatedBy: "/").first ?? from
-            : from
+        // Saliente si el REMITENTE es nuestro JID (from): en el archivo del
+        // remitente ejabberd omite `to` o lo pone con resource, por lo que
+        // comparar `to == localJID` (el criterio anterior) marcaba los
+        // mensajes propios como entrantes → "eco" de tu propio texto en el
+        // catch-up (XEP-0313 mostrar los salientes como si te respondieran).
+        let fromBare = from.components(separatedBy: "/").first ?? from
+        let isOutgoing = fromBare == localJID
+        let conversationId: String
+        if type == "groupchat" {
+            conversationId = fromBare
+        } else if isOutgoing {
+            conversationId = to.components(separatedBy: "/").first ?? to
+        } else {
+            conversationId = fromBare
+        }
         let delay = extractDelayTimestamp(from: msgXML)
         let attachment = AttachmentParser.parse(from: msgXML, body: body)
 
@@ -219,7 +231,7 @@ actor XMPPMAMManager {
             senderJID: from,
             text: body,
             timestamp: delay ?? Date(),
-            isOutgoing: !to.isEmpty && to == localJID,
+            isOutgoing: isOutgoing,
             status: .delivered,
             type: attachment == nil ? .text : .file,
             attachment: attachment

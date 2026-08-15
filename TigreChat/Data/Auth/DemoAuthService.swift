@@ -4,11 +4,10 @@ import Foundation
 /// code with the CSPRNG, exposes it for the demo banner and validates it with
 /// a constant-time comparison. Nothing leaves the device.
 ///
-/// Returns `AuthCredentials.isDemo = true` so the app keeps the flow in demo
-/// mode: the router seeds a local roster (`DemoRosterSeeder`) and navigates to
-/// the chat list without touching the network. When the real backend lands,
-/// `AuthServiceFactory.useDemo = false` replaces this whole actor with
-/// `ToDusAuthService` — no other code changes.
+/// Returns the demo account's real credentials (`jorge@ims-brz.z17.cu`) so the
+/// router connects to the actual IM server through the normal path. When the
+/// real backend lands, `AuthServiceFactory.useDemo = false` replaces this
+/// whole actor with `ToDusAuthService` — no other code changes.
 actor DemoAuthService: AuthService {
     private let config: AuthServiceConfig
     private var phone = ""
@@ -31,17 +30,15 @@ actor DemoAuthService: AuthService {
         guard let expectedCode, constantTimeEquals(expectedCode, code) else {
             throw SMSAuthError.invalidCode
         }
-        // DEMO (temporary): no backend provisioning yet, and the real server
-        // has no roster for this account, so don't attempt a real connection —
-        // the router seeds a local demo roster instead. Resume the real path
-        // (which now works: IQDispatcher early-response buffer, connection
-        // strategies) by flipping `isDemo` back to false with real
-        // credentials, e.g.:
-        //   jid: "jorge@ims-brz.z17.cu", password: "s0mePass", isDemo: false
+        // DEMO (temporary): no backend provisioning yet, so the app connects
+        // to the real IM server with the demo account's credentials (the
+        // integration pipeline works end-to-end: strategies, STARTTLS,
+        // SCRAM, bind, roster, OMEMO). The real backend will return the
+        // provisioned account here instead.
         return AuthCredentials(
             jid: "jorge@ims-brz.z17.cu",
             password: "s0mePass",
-            isDemo: true
+            isDemo: false
         )
     }
 

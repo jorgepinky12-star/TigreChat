@@ -585,14 +585,28 @@ private var messageContinuation: AsyncStream<Message>.Continuation?
             }
 
             let from = msgStanza.from ?? ""
-            let conversationId = msgStanza.type == "groupchat"
-                ? (from.components(separatedBy: "/").first ?? from)
-                : from
+            let fromBare = from.components(separatedBy: "/").first ?? from
+            let conversationId = fromBare
 
             // MAM (XEP-0313): los resultados del archivo NO son mensajes para la
             // UI; los consume XMPPMAMManager para el catch-up.
             if msgStanza.xml.contains("urn:xmpp:mam:2") {
                 mamMessageContinuation?.yield(msgStanza)
+                return
+            }
+
+            // Ecos propios y stanzas de error NO son mensajes de chat:
+            // - `from` es nuestro JID (envío a uno mismo, resource propio, o
+            //   nuestro nick en un MUC): el texto ya está persistido como
+            //   saliente; pintarlo como entrante es el "eco" que repite el
+            //   mensaje como si el contacto te hubiera respondido.
+            // - `type='error'` (cuenta/room inexistente): ejabberd devuelve el
+            //   `<body>` original en el stanza de error; nunca debe mostrarse
+            //   como una respuesta del contacto.
+            let localBare = (currentJID ?? "").components(separatedBy: "/").first ?? ""
+            let localResource = currentJID?.components(separatedBy: "/").last ?? ""
+            let senderResource = from.components(separatedBy: "/").last ?? ""
+            if msgStanza.type == "error" || fromBare == localBare || senderResource == localResource {
                 return
             }
 
