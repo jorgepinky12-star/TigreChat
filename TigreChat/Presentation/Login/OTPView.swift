@@ -6,12 +6,10 @@ struct OTPView: View {
     @State private var viewModel: OTPViewModel
     @FocusState private var focusedDigit: Int?
     let maskedPhone: String
-    let onVerified: () -> Void
 
-    init(viewModel: OTPViewModel, maskedPhone: String, onVerified: @escaping () -> Void) {
+    init(viewModel: OTPViewModel, maskedPhone: String) {
         _viewModel = State(initialValue: viewModel)
         self.maskedPhone = maskedPhone
-        self.onVerified = onVerified
     }
 
     var body: some View {
@@ -34,7 +32,9 @@ struct OTPView: View {
             }
 
             if viewModel.isVerified {
-                Text("Account provisioning (JID + ejabberd) will be wired once the SMS backend lands.")
+                ProgressView()
+                    .tint(Theme.Colors.primary)
+                Text("Connecting to your chats…")
                     .font(Theme.Typography.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -45,7 +45,7 @@ struct OTPView: View {
 
             if !viewModel.isVerified {
                 VStack(spacing: Theme.Layout.spacing16) {
-                    if let demoCode = viewModel.expectedCode {
+                    if let demoCode = viewModel.demoCode {
                         Label("Demo — no backend yet. Code: \(demoCode)", systemImage: "wrench.and.screwdriver")
                             .font(Theme.Typography.caption)
                             .foregroundStyle(.secondary)
@@ -104,10 +104,8 @@ struct OTPView: View {
 
             Spacer()
         }
-        .onChange(of: viewModel.isVerified) { _, verified in
-            if verified {
-                onVerified()
-            }
+        .task {
+            await viewModel.loadDemoCode()
         }
         .navigationBarBackButtonHidden(viewModel.isVerified)
         .toolbar {

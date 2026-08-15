@@ -3,6 +3,9 @@ import SwiftUI
 struct ChatListView: View {
     @State private var viewModel: ChatListViewModel
     @Binding var isLoggedIn: Bool
+    /// Pila de navegación: su estado controla el tab bar (raíz visible,
+    /// detalle oculto) sin depender de la restauración implícita del sistema.
+    @State private var path: [Conversation] = []
 
     init(viewModel: ChatListViewModel, isLoggedIn: Binding<Bool>) {
         _viewModel = State(initialValue: viewModel)
@@ -10,8 +13,10 @@ struct ChatListView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        NavigationStack(path: $path) {
+            VStack(spacing: 0) {
+                searchField
+                List {
                 if viewModel.filteredConversations.isEmpty && !viewModel.isLoading {
                     ContentUnavailableView(
                         "No conversations",
@@ -25,7 +30,9 @@ struct ChatListView: View {
                     }
                 }
             }
-            .searchable(text: $viewModel.searchText)
+            .refreshable {
+                await viewModel.refreshMessages()
+            }
             .navigationTitle("Chats")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -70,11 +77,40 @@ struct ChatListView: View {
             .sheet(isPresented: $viewModel.showNewGroup) {
                 NewGroupView(viewModel: viewModel)
             }
-            .task {
+.task {
                 await viewModel.loadConversations()
                 viewModel.listenToMessages()
             }
         }
+        }
+        // Un solo dueño de la visibilidad: raíz (path vacío) → visible; al
+        // abrir un chat (path no vacío) → oculto. Al volver, path se vacía con
+        // el pop → la barra sale junto con la vista, sin delay de restauración.
+        .toolbar(path.isEmpty ? .visible : .hidden, for: .tabBar)
+    }
+
+    /// Always-visible search field pinned under the "Chats" title (the system
+    /// `.searchable` hides until scrolled/pulled, so we render our own).
+    private var searchField: some View {
+        HStack(spacing: Theme.Layout.spacing8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search conversations", text: $viewModel.searchText)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+            if !viewModel.searchText.isEmpty {
+                Button {
+                    viewModel.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .capsuleField()
+        .padding(.horizontal)
+        .padding(.bottom, Theme.Layout.spacing8)
     }
 }
 
@@ -99,7 +135,7 @@ struct ConversationRow: View {
                     }
                     Spacer()
                     if let timestamp = conversation.lastTimestamp {
-                        Text(timestamp, style: .time)
+                        Text(timestamp.chatListTimestamp())
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -131,7 +167,7 @@ struct NewChatView: View {
         NavigationStack {
             Form {
                 TextField("Contact JID (user@domain)", text: $jid)
-                    .autocapitalization(.none)
+                    .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                 Button("Start Chat") {
                     viewModel.startChat(with: jid)

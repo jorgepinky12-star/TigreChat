@@ -29,9 +29,27 @@ struct ChatDetailView: View {
         }
         .navigationTitle(viewModel.conversation.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await viewModel.setOMEMOEnabled(!viewModel.omemoEnabled) }
+                } label: {
+                    Image(systemName: viewModel.omemoEnabled ? "lock" : "lock.open")
+                        .foregroundStyle(viewModel.omemoEnabled ? Theme.Colors.sendButton : .secondary)
+                }
+                .accessibilityLabel(viewModel.omemoEnabled
+                    ? "Cifrado OMEMO activado"
+                    : "Cifrado OMEMO desactivado")
+            }
+        }
+        // El tab bar lo controla la pila (ChatListView/GroupsView según path):
+        // el detalle siempre se muestra sin tab bar.
         .task {
             await viewModel.loadMessages()
             await viewModel.markAsRead()
+            // Los grupos no entran en el catch-up global MAM: se trae el
+            // historial de la sala al abrir.
+            await viewModel.loadGroupHistoryIfNeeded()
             if let client { viewModel.observeTyping(from: client) }
         }
         .photosPicker(isPresented: $viewModel.showAttachmentPicker,
@@ -42,6 +60,16 @@ struct ChatDetailView: View {
             Task { await viewModel.sendAttachment(item) }
             viewModel.selectedAttachment = nil
         }
+        // Aviso del último envío: desconexión (queda pendiente) o degradación
+        // a texto plano porque OMEMO no pudo cifrar.
+        .alert("Aviso de envío", isPresented: Binding(
+            get: { viewModel.sendError != nil },
+            set: { if !$0 { viewModel.sendError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.sendError ?? "")
+        }
     }
 
     private var messageList: some View {
@@ -49,7 +77,9 @@ struct ChatDetailView: View {
             ScrollView {
                 LazyVStack(spacing: Theme.Layout.spacing4) {
                     ForEach(viewModel.messages) { message in
-                        ChatBubble(message: message)
+                        ChatBubble(message: message, onRetract: {
+                            Task { await viewModel.retract(message) }
+                        })
                             .id(message.id)
                     }
                 }

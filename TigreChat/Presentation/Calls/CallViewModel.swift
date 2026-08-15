@@ -9,7 +9,7 @@ final class CallViewModel {
     private(set) var isSpeakerOn = false
     private(set) var isVideoEnabled = false
     private(set) var duration: TimeInterval = 0
-    nonisolated(unsafe) private var timer: Timer?
+    private var timerTask: Task<Void, Never>?
 
     let callRepository: CallRepository
 
@@ -76,21 +76,26 @@ final class CallViewModel {
     }
 
     private func startTimer() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, let start = self.call?.startTime else { return }
+        timerTask?.cancel()
+        // Task hereda el aislamiento @MainActor, así que `duration` se
+        // actualiza en el actor sin sincronización adicional.
+        timerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, let start = self.call?.startTime else { continue }
                 self.duration = Date().timeIntervalSince(start)
             }
         }
     }
 
     private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
+        timerTask?.cancel()
+        timerTask = nil
     }
 
-    deinit { timer?.invalidate() }
+    isolated deinit {
+        timerTask?.cancel()
+    }
 
     var formattedDuration: String {
         let total = Int(duration)

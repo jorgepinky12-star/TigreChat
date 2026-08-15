@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		AAC14EF730290EDD00943B1B /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 497C4F626B6F22AD8FAB64CD /* SwiftProtobuf */; };
+		AAC2EBA4302AA37B00973927 /* NIO in Frameworks */ = {isa = PBXBuildFile; productRef = 3A4B5C6D7E8F9012A3B4C5D6 /* NIO */; };
+		AAC2EBA5302AA37B00973927 /* NIOEmbedded in Frameworks */ = {isa = PBXBuildFile; productRef = 4A5B6C7D8E9F0123A4B5C6D7 /* NIOEmbedded */; };
+		AAC2EBA6302AA37B00973927 /* NIOTLS in Frameworks */ = {isa = PBXBuildFile; productRef = 5A6B7C8D9E0F1234A5B6C7D8 /* NIOTLS */; };
+		AAC2EBA7302AA37B00973927 /* NIOSSL in Frameworks */ = {isa = PBXBuildFile; productRef = 6A7B8C9D0E1F2345A6B7C8D9 /* NIOSSL */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -56,6 +60,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AAC2EBA7302AA37B00973927 /* NIOSSL in Frameworks */,
+				AAC2EBA6302AA37B00973927 /* NIOTLS in Frameworks */,
+				AAC2EBA5302AA37B00973927 /* NIOEmbedded in Frameworks */,
+				AAC2EBA4302AA37B00973927 /* NIO in Frameworks */,
 				AAC14EF730290EDD00943B1B /* SwiftProtobuf in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -118,6 +126,10 @@
 			name = TigreChat;
 			packageProductDependencies = (
 				497C4F626B6F22AD8FAB64CD /* SwiftProtobuf */,
+				3A4B5C6D7E8F9012A3B4C5D6 /* NIO */,
+				4A5B6C7D8E9F0123A4B5C6D7 /* NIOEmbedded */,
+				5A6B7C8D9E0F1234A5B6C7D8 /* NIOTLS */,
+				6A7B8C9D0E1F2345A6B7C8D9 /* NIOSSL */,
 			);
 			productName = TigreChat;
 			productReference = AA8CC44E2FD5F03E00DD6979 /* TigreChat.app */;
@@ -198,11 +210,15 @@
 			knownRegions = (
 				en,
 				Base,
+				es,
+				"pt-BR",
 			);
 			mainGroup = AA8CC4452FD5F03E00DD6979;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				0699CABAC5B193E1CDD24858 /* XCRemoteSwiftPackageReference "swift-protobuf" */,
+				1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "swift-nio" */,
+				2A3B4C5D6E7F8091A2B3C4D5 /* XCRemoteSwiftPackageReference "swift-nio-ssl" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AA8CC44F2FD5F03E00DD6979 /* Products */;
@@ -597,13 +613,49 @@
 				minimumVersion = 1.28.0;
 			};
 		};
+		1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.65.0;
+			};
+		};
+		2A3B4C5D6E7F8091A2B3C4D5 /* XCRemoteSwiftPackageReference "swift-nio-ssl" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssl.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.28.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		3A4B5C6D7E8F9012A3B4C5D6 /* NIO */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIO;
+		};
 		497C4F626B6F22AD8FAB64CD /* SwiftProtobuf */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 0699CABAC5B193E1CDD24858 /* XCRemoteSwiftPackageReference "swift-protobuf" */;
 			productName = SwiftProtobuf;
+		};
+		4A5B6C7D8E9F0123A4B5C6D7 /* NIOEmbedded */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOEmbedded;
+		};
+		5A6B7C8D9E0F1234A5B6C7D8 /* NIOTLS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1A2B3C4D5E6F708192A3B4C5 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOTLS;
+		};
+		6A7B8C9D0E1F2345A6B7C8D9 /* NIOSSL */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 2A3B4C5D6E7F8091A2B3C4D5 /* XCRemoteSwiftPackageReference "swift-nio-ssl" */;
+			productName = NIOSSL;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

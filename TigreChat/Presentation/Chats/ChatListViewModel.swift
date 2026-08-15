@@ -1,9 +1,11 @@
 import Foundation
 import Observation
+import os
 
 @MainActor
 @Observable
 final class ChatListViewModel {
+    private static let logger = Logger(subsystem: "com.tigrechat", category: "ChatList")
     private(set) var conversations: [Conversation] = []
     private(set) var isLoading = false
     var searchText = ""
@@ -46,8 +48,24 @@ final class ChatListViewModel {
         isConnected = await xmppClient.isAuthenticated
         do {
             conversations = try await loadConversations.execute()
+            // El roster se pide durante el auth pero se procesa de forma
+            // asíncrona: si la primera carga ocurre antes de que llegue,
+            // reintentamos una vez breve en vez de mostrar lista vacía.
+            if conversations.isEmpty, isConnected {
+                try? await Task.sleep(for: .milliseconds(500))
+                conversations = try await loadConversations.execute()
+            }
             conversations.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
+            // Catch-up XEP-0313: con conexión, trae los mensajes archivados
+            // recientes (dedupe por id, sin tocar no leídos). En demo/offline
+            // falla silencioso (try?).
+            if isConnected {
+                try? await messageRepository.syncRecentMessages()
+                conversations = try await loadConversations.execute()
+                conversations.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
+            }
         } catch {
+            Self.logger.error("loadConversations failed: \(error, privacy: .public)")
             conversations = []
         }
         isLoading = false
@@ -61,6 +79,12 @@ final class ChatListViewModel {
                 await loadConversations()
             }
         }
+    }
+
+    /// Refresco manual (pull-to-refresh): catch-up MAM + recarga de la lista.
+    func refreshMessages() async {
+        try? await messageRepository.syncRecentMessages()
+        await loadConversations()
     }
 
     func startChat(with jid: String) {
@@ -81,7 +105,9 @@ final class ChatListViewModel {
                 let conv = Conversation(jid: room.jid, title: room.name, isGroup: true)
                 conversations.insert(conv, at: 0)
             }
-        } catch {}
+        } catch {
+            Self.logger.error("createGroup failed: \(error, privacy: .public)")
+        }
     }
 
     func logout() async {

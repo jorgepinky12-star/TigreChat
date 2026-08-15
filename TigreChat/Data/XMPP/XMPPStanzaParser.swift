@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct StreamFeatures: Sendable {
     var startTLSRequired: Bool = false
@@ -23,7 +24,11 @@ actor XMPPStanzaParser {
     }
 
     func appendData(_ data: Data) {
-        guard let string = String(data: data, encoding: .utf8) else { return }
+        guard let string = String(data: data, encoding: .utf8) else {
+            os_log("[Parser] appendData(%d): <no utf8>", log: connLog, type: .debug, data.count)
+            return
+        }
+        os_log("[Parser] appendData(%d): %{public}s", log: connLog, type: .debug, data.count, String(string.prefix(300)))
         buffer += string
         processBuffer()
     }
@@ -31,8 +36,29 @@ actor XMPPStanzaParser {
     private func processBuffer() {
         while let stanza = extractNextStanza() {
             if let parsed = parseStanza(stanza) {
+                os_log("[Parser] stanza -> %{public}s", log: connLog, type: .debug, describe(parsed))
                 stanzaCallback?(parsed)
+            } else {
+                os_log("[Parser] stanza dropped: %{public}s", log: connLog, type: .debug, String(stanza.prefix(120)))
             }
+        }
+    }
+
+    private func describe(_ stanza: XMPPStanza) -> String {
+        switch stanza {
+        case .streamOpen: return "streamOpen"
+        case .streamClose: return "streamClose"
+        case .streamFeatures: return "streamFeatures"
+        case .starttls: return "starttls"
+        case .proceed: return "proceed"
+        case .challenge: return "challenge"
+        case .success: return "success"
+        case .failure: return "failure"
+        case .message: return "message"
+        case .presence: return "presence"
+        case .iq: return "iq"
+        case .streamError: return "streamError"
+        case .unknown: return "unknown"
         }
     }
 
@@ -222,7 +248,8 @@ actor XMPPStanzaParser {
             delay: delay,
             hasReceiptRequest: xml.contains("urn:xmpp:receipts") && xml.contains("<request"),
             receiptID: extractReceiptID(from: xml),
-            marker: extractMarker(from: xml)
+            marker: extractMarker(from: xml),
+            oobURL: OOBParser.extractURL(from: xml)
         )
         return .message(stanza)
     }
@@ -266,12 +293,26 @@ actor XMPPStanzaParser {
     private func extractAttributes(from xml: String) -> [String: String] {
         var attrs: [String: String] = [:]
         let pattern = try? NSRegularExpression(pattern: "([\\w:.-]+)\\s*=\\s*(?:'([^']*)'|\"([^\"]*)\")")
-        let nsRange = NSRange(xml.startIndex..<xml.endIndex, in: xml)
-        pattern?.enumerateMatches(in: xml, range: nsRange) { match, _, _ in
-            guard let match, match.numberOfRanges == 3 else { return }
-            let key = String(xml[Range(match.range(at: 1), in: xml)!])
-            let singleQuoted = match.range(at: 2).location != NSNotFound ? String(xml[Range(match.range(at: 2), in: xml)!]) : nil
-            let doubleQuoted = match.range(at: 3).location != NSNotFound ? String(xml[Range(match.range(at: 3), in: xml)!]) : nil
+
+        // SÓLO los atributos del elemento raíz: la regex global sobre todo el
+        // XML pisaría el id del `<iq>` con ids anidados (p. ej. el `id` de un
+        // `<item id='...'>` dentro de un result de pubsub).
+        let rootTag: String
+        if let close = xml.firstIndex(of: ">") {
+            rootTag = String(xml[..<close])
+        } else {
+            rootTag = xml
+        }
+        let nsRange = NSRange(rootTag.startIndex..<rootTag.endIndex, in: rootTag)
+        pattern?.enumerateMatches(in: rootTag, range: nsRange) { match, _, _ in
+            // OJO: NO filtrar por numberOfRanges — con 3 grupos de captura un
+            // match real reporta 4 ranges (match completo + grupos), y el
+            // guard `== 3` anterior dejaba `attrs` SIEMPRE vacío, rompiendo
+            // todos los stanzas entrantes (id/from/type perdidos).
+            guard let match else { return }
+            let key = String(rootTag[Range(match.range(at: 1), in: rootTag)!])
+            let singleQuoted = match.range(at: 2).location != NSNotFound ? String(rootTag[Range(match.range(at: 2), in: rootTag)!]) : nil
+            let doubleQuoted = match.range(at: 3).location != NSNotFound ? String(rootTag[Range(match.range(at: 3), in: rootTag)!]) : nil
             attrs[key] = singleQuoted ?? doubleQuoted
         }
         return attrs

@@ -55,10 +55,34 @@ final class XMPPContactRepository: ContactRepository {
                 )
                 modelContext.insert(entity)
             }
+            // Cada contacto real del roster también aparece como conversación
+            // en la lista de chats, aunque todavía no haya mensajes.
+            if !item.isPending {
+                ensureConversation(for: item)
+            }
         }
         try? modelContext.save()
         let contacts = (try? modelContext.fetch(FetchDescriptor<ContactEntity>())) ?? []
         contactContinuation.yield(contacts.map { $0.toDomain() })
+    }
+
+    /// Crea (o actualiza el título) de la conversación de un contacto del
+    /// roster. Evita duplicados gracias al atributo `.unique` de `jid`.
+    private func ensureConversation(for item: RosterItem) {
+        let targetJID = item.jid
+        let fetch = FetchDescriptor<ConversationEntity>(
+            predicate: #Predicate { $0.jid == targetJID }
+        )
+        if let existing = try? modelContext.fetch(fetch).first {
+            if let name = item.name, !name.isEmpty, existing.title != name {
+                existing.title = name
+            }
+        } else {
+            let title = item.name?.isEmpty == false
+                ? item.name!
+                : (item.jid.components(separatedBy: "@").first ?? item.jid)
+            modelContext.insert(ConversationEntity(jid: item.jid, title: title))
+        }
     }
 
     private func startPresenceListening() {
@@ -79,6 +103,9 @@ final class XMPPContactRepository: ContactRepository {
         if let entity = try? modelContext.fetch(fetch).first {
             if presence.type == "unavailable" {
                 entity.presenceStatus = .offline
+            } else if let mode = presence.show, ["away", "xa", "dnd"].contains(mode) {
+                // Paridad con el cliente Android: away/xa/dnd → AWAY.
+                entity.presenceStatus = .away
             } else {
                 entity.presenceStatus = .online
             }

@@ -25,21 +25,21 @@ enum CountryCode: String, CaseIterable, Identifiable, Sendable {
 
     var name: String {
         switch self {
-        case .cuba: return "Cuba"
-        case .unitedStates: return "United States"
-        case .russia: return "Russia"
-        case .spain: return "Spain"
-        case .france: return "France"
-        case .unitedKingdom: return "United Kingdom"
-        case .germany: return "Germany"
-        case .peru: return "Peru"
-        case .mexico: return "Mexico"
-        case .brazil: return "Brazil"
-        case .chile: return "Chile"
-        case .colombia: return "Colombia"
-        case .venezuela: return "Venezuela"
-        case .argentina: return "Argentina"
-        case .uruguay: return "Uruguay"
+        case .cuba: return String(localized: "Cuba")
+        case .unitedStates: return String(localized: "United States")
+        case .russia: return String(localized: "Russia")
+        case .spain: return String(localized: "Spain")
+        case .france: return String(localized: "France")
+        case .unitedKingdom: return String(localized: "United Kingdom")
+        case .germany: return String(localized: "Germany")
+        case .peru: return String(localized: "Peru")
+        case .mexico: return String(localized: "Mexico")
+        case .brazil: return String(localized: "Brazil")
+        case .chile: return String(localized: "Chile")
+        case .colombia: return String(localized: "Colombia")
+        case .venezuela: return String(localized: "Venezuela")
+        case .argentina: return String(localized: "Argentina")
+        case .uruguay: return String(localized: "Uruguay")
         }
     }
 
@@ -49,16 +49,21 @@ enum CountryCode: String, CaseIterable, Identifiable, Sendable {
 @MainActor
 @Observable
 final class PhoneLoginViewModel {
-    var selectedCountry: CountryCode = .cuba
+    var selectedCountry: CountryCode = .brazil
     var phoneNumber = ""
     var isLoading = false
     var errorMessage: String?
 
-    /// Demo-only: the code "sent" by the simulated request. Replaced by the
-    /// backend response once the SMS service exists.
-    private(set) var generatedCode: String?
     /// The phone number as displayed on the OTP screen (masked, WA style).
+    /// Also acts as the "code requested" flag that drives navigation.
     private(set) var maskedPhone: String?
+
+    /// Backend client shared with the OTP step (it keeps the clientToken).
+    let service: AuthService
+
+    init(service: AuthService) {
+        self.service = service
+    }
 
     /// Full E.164-style number: country prefix + local digits.
     var fullNumber: String {
@@ -68,18 +73,19 @@ final class PhoneLoginViewModel {
     func requestCode() async {
         let digits = digitsOnly(phoneNumber)
         guard (6...15).contains(digits.count) else {
-            errorMessage = "Enter a valid phone number"
+            errorMessage = String(localized: "Enter a valid phone number")
             return
         }
         isLoading = true
         errorMessage = nil
 
-        // TODO(backend): POST /v1/auth/request-code { "phone": fullNumber }
-        // The server generates and hashes the OTP (CSPRNG, TTL 5 min, rate
-        // limited) and sends it via SMS. Until then, simulate locally.
-        try? await Task.sleep(for: .milliseconds(600))
-        generatedCode = OTPCodeGenerator.generate()
-        maskedPhone = mask(fullNumber)
+        do {
+            try await service.requestCode(phone: fullNumber)
+            maskedPhone = mask(fullNumber)
+        } catch {
+            errorMessage = (error as? SMSAuthError)?.errorDescription
+                ?? String(localized: "Could not reach the server. Try again.")
+        }
         isLoading = false
     }
 

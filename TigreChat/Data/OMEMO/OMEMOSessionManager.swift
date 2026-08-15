@@ -1,157 +1,83 @@
 import Foundation
 
+/// `CipherTextMessage` (vendor) transporta solo valores Sendable (`CipherTextType`,
+/// `Data`) pero no declara la conformidad (misma regla para `CipherTextType`,
+/// enum de raw value): se declara `@unchecked` aquí porque no hay estado mutable.
+extension CipherTextMessage: @unchecked Sendable {}
+
+/// Gestión de sesiones OMEMO (XEP-0384) sobre el SignalProtocolKit vendored.
+///
+/// Sustituye al ratchet custom: X3DH + Double Ratchet ahora son los de
+/// SignalProtocolSwift (wire-compatible con libsignal / Conversations /
+/// smack-omemo). El estado vive en `OMEMOSignalStore` (Keychain).
 actor OMEMOSessionManager {
-    private let keyManager: KeyManager
-    private var sessions: [String: [UInt32: OMEMOSessionState]] = [:]
+    private let store: OMEMOSignalStore
 
-    init(keyManager: KeyManager) {
-        self.keyManager = keyManager
+    /// El store se inyecta para que los tests simulen dos dispositivos con
+    /// Keychain/UserDefaults aislados; en producción se usa el por defecto.
+    init(store: OMEMOSignalStore = OMEMOSignalStore()) {
+        self.store = store
     }
 
-    func getOrCreateSession(
-        jid: String,
-        deviceId: UInt32,
-        bobIdentityKey: Data,
-        bobSignedPreKey: Data,
-        bobRatchetKey: Data,
-        bobOneTimePreKey: Data?
-    ) async throws -> OMEMOSessionState {
-        if let existing = sessions[jid]?[deviceId] {
-            return existing
-        }
-        if let saved = await keyManager.loadSession(jid: jid, deviceId: deviceId) {
-            sessions[jid, default: [:]][deviceId] = saved
-            return saved
-        }
-
-        guard let myIdentity = await keyManager.identityKeyPair,
-              let mySignedPreKey = await keyManager.signedPreKey else {
-            throw OMEMOError.noSession
-        }
-
-        let (sharedSecret, ad) = try await X3DH.aliceInitiate(
-            myIdentityKey: myIdentity.privateKey,
-            mySignedPreKeyPrivate: mySignedPreKey.privateKey,
-            myOneTimePreKeyPrivate: nil,
-            bobIdentityKey: bobIdentityKey,
-            bobSignedPreKey: bobSignedPreKey,
-            bobOneTimePreKey: bobOneTimePreKey
-        )
-
-        let state = try await DoubleRatchet.initializeAsAlice(
-            sharedSecret: sharedSecret,
-            bobSignedPreKey: bobSignedPreKey,
-            bobRatchetKey: bobRatchetKey
-        )
-
-        let session = OMEMOSessionState(
-            jid: jid,
-            deviceId: deviceId,
-            rootKey: state.rootKey,
-            sendingChainKey: state.sendingChainKey,
-            receivingChainKey: state.receivingChainKey,
-            sendingDHKeyPair: state.sendingDHKeyPair,
-            receivingDHPublicKey: state.receivingDHPublicKey,
-            sendingChainIndex: state.sendingChainIndex,
-            receivingChainIndex: state.receivingChainIndex
-        )
-
-        sessions[jid, default: [:]][deviceId] = session
-        await keyManager.saveSession(jid: jid, deviceId: deviceId, state: session)
-        return session
+    /// true si ya hay sesión establecida con el dispositivo remoto.
+    func hasSession(jid: String, deviceId: UInt32) -> Bool {
+        store.sessionStore.containsSession(for: OMEMOAddress(jid: jid, deviceId: deviceId))
     }
 
-    func encryptMessage(plaintext: String, jid: String, deviceId: UInt32) async throws -> EncryptedPayload {
-        guard let session = sessions[jid]?[deviceId] else {
-            throw OMEMOError.noSession
+    /// Establece una sesión X3DH desde el bundle PEP del dispositivo remoto.
+    /// Valida la firma del signed prekey contra la identidad remota (TOFU:
+    /// la primera identidad vista se acepta y se memoriza).
+    func processBundle(_ bundle: OMEMOBundle, jid: String) throws {
+        let address = OMEMOAddress(jid: jid, deviceId: bundle.deviceId)
+        guard let signedPreKey = try? PublicKey(from: bundle.signedPreKey.publicKey),
+              let identity = try? PublicKey(from: bundle.identityKey) else {
+            throw OMEMOError.invalidBundle
         }
 
-        let plaintextData = Data(plaintext.utf8)
-        let ad = Data("OMEMO Message".utf8)
+        let preKeyPublic = try bundle.preKeys.first.map { try PublicKey(from: $0.publicKey) }
+        let preKeyId = bundle.preKeys.first?.id ?? 0
 
-        var rs = session.toRatchetState()
-        let (ciphertext, ratchetKey) = try await DoubleRatchet.encrypt(
-            state: &rs,
-            plaintext: plaintextData,
-            ad: ad
+        let spkBundle = SessionPreKeyBundle(
+            preKeyId: preKeyId,
+            preKeyPublic: preKeyPublic,
+            signedPreKeyId: bundle.signedPreKey.id,
+            signedPreKeyPublic: signedPreKey,
+            signedPreKeySignature: bundle.signedPreKey.signature,
+            identityKey: identity
         )
 
-        let newSession = OMEMOSessionState.fromRatchetState(rs, jid: jid, deviceId: deviceId)
-        sessions[jid]?[deviceId] = newSession
-        await keyManager.saveSession(jid: jid, deviceId: deviceId, state: newSession)
-
-        let iv = newSession.sendingChainKey.prefix(12)
-        return EncryptedPayload(
-            iv: Data(iv),
-            ciphertext: ciphertext.dropLast(16),
-            authTag: ciphertext.suffix(16),
-            senderDeviceId: await keyManager.deviceId,
-            senderIdentityKey: (await keyManager.identityKeyPair)?.publicKey ?? Data(),
-            receiverIdentityKey: Data(),
-            preKeyId: nil,
-            signedPreKeyId: 0,
-            ratchetKey: ratchetKey,
-            isPreKeyMessage: false
-        )
-    }
-
-    func decryptMessage(payload: EncryptedPayload, jid: String) async throws -> String {
-        guard let session = sessions[jid]?[payload.senderDeviceId] else {
-            throw OMEMOError.noSession
+        do {
+            try SessionCipher(store: store, remoteAddress: address).process(preKeyBundle: spkBundle)
+        } catch {
+            throw OMEMOError.sessionBuildFailed(error.localizedDescription)
         }
+    }
 
-        let ad = Data("OMEMO Message".utf8)
-        let ciphertext = payload.ciphertext + payload.authTag
-
-        var rs = session.toRatchetState()
-        let plaintext = try await DoubleRatchet.decrypt(
-            state: &rs,
-            ciphertext: ciphertext,
-            ratchetKey: payload.ratchetKey,
-            ad: ad
-        )
-
-        let newSession = OMEMOSessionState.fromRatchetState(rs, jid: jid, deviceId: payload.senderDeviceId)
-        sessions[jid]?[payload.senderDeviceId] = newSession
-        await keyManager.saveSession(jid: jid, deviceId: payload.senderDeviceId, state: newSession)
-
-        guard let text = String(data: plaintext, encoding: .utf8) else {
-            throw OMEMOError.decryptionFailed
+    /// Cifra la session key del mensaje para un dispositivo concreto. Devuelve
+    /// un `CipherTextMessage` (`.preKey` la primera vez, `.signal` después).
+    func encryptSessionKey(_ key: Data, jid: String, deviceId: UInt32) throws -> CipherTextMessage {
+        let address = OMEMOAddress(jid: jid, deviceId: deviceId)
+        do {
+            return try SessionCipher(store: store, remoteAddress: address).encrypt(key)
+        } catch {
+            throw OMEMOError.encryptionFailed(error.localizedDescription)
         }
-        return text
     }
 
-    func removeSession(jid: String, deviceId: UInt32) async {
-        sessions[jid]?.removeValue(forKey: deviceId)
-        await keyManager.deleteSession(jid: jid, deviceId: deviceId)
-    }
-}
-
-private extension OMEMOSessionState {
-    func toRatchetState() -> DoubleRatchet.RatchetState {
-        DoubleRatchet.RatchetState(
-            rootKey: rootKey,
-            sendingChainKey: sendingChainKey,
-            receivingChainKey: receivingChainKey,
-            sendingDHKeyPair: sendingDHKeyPair ?? DHKeyPair(publicKey: Data(), privateKey: Data()),
-            receivingDHPublicKey: receivingDHPublicKey,
-            sendingChainIndex: sendingChainIndex,
-            receivingChainIndex: receivingChainIndex,
-            previousSendingChainKey: nil
-        )
+    /// Descifra la session key de un `<key>` entrante. Un `.preKey` establece
+    /// la sesión X3DH al vuelo (y consume el one-time prekey local usado).
+    func decryptSessionKey(_ message: CipherTextMessage, jid: String, deviceId: UInt32) throws -> Data {
+        let address = OMEMOAddress(jid: jid, deviceId: deviceId)
+        do {
+            return try SessionCipher(store: store, remoteAddress: address).decrypt(message)
+        } catch let error as SignalError where error.type == .untrustedIdentity {
+            throw OMEMOError.untrustedIdentity
+        } catch {
+            throw OMEMOError.decryptionFailed(error.localizedDescription)
+        }
     }
 
-    static func fromRatchetState(_ state: DoubleRatchet.RatchetState, jid: String, deviceId: UInt32) -> OMEMOSessionState {
-        OMEMOSessionState(
-            jid: jid,
-            deviceId: deviceId,
-            rootKey: state.rootKey,
-            sendingChainKey: state.sendingChainKey,
-            receivingChainKey: state.receivingChainKey,
-            sendingDHKeyPair: state.sendingDHKeyPair,
-            receivingDHPublicKey: state.receivingDHPublicKey,
-            sendingChainIndex: state.sendingChainIndex,
-            receivingChainIndex: state.receivingChainIndex
-        )
+    func removeSession(jid: String, deviceId: UInt32) {
+        try? store.sessionStore.deleteSession(for: OMEMOAddress(jid: jid, deviceId: deviceId))
     }
 }

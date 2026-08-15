@@ -1,7 +1,4 @@
 import SwiftUI
 
-struct OldContentView: View {
-    var body: some View {
-        Text("TigreChat")
-    }
-}
+// Root view: kept as a placeholder for the app's entry point.
+// Navigation lives in `AppRouter`.

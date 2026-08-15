@@ -13,9 +13,14 @@ actor XMPPClient {
     private var serverDomain: String = ""
     private var serverPort: Int = 5222
     private var useDirectTLS: Bool = false
+private var messageContinuation: AsyncStream<Message>.Continuation?
 
-    private var messageContinuation: AsyncStream<Message>.Continuation?
     let messageStream: AsyncStream<Message>
+
+    /// XEP-0424: ids de mensajes retractados por otros dispositivos.
+    private var retractionContinuation: AsyncStream<String>.Continuation?
+
+    let retractionStream: AsyncStream<String>
 
     private var presenceContinuation: AsyncStream<PresenceStanza>.Continuation?
     let presenceStream: AsyncStream<PresenceStanza>
@@ -25,6 +30,7 @@ actor XMPPClient {
 
     private var featuresContinuation: CheckedContinuation<StreamFeatures, any Error>?
     private var lastStreamFeatures: StreamFeatures?
+    private var tlsContinuation: CheckedContinuation<Void, any Error>?
 
     let iqDispatcher = IQDispatcher()
 
@@ -60,7 +66,11 @@ actor XMPPClient {
     private var lastPassword: String?
     private var shouldAutoReconnect = false
     private var pathMonitor: NWPathMonitor?
+    // `NWPathMonitor.start(queue:)` exige una DispatchQueue (API de
+    // Network.framework, sin variante async); el handler solo lanza Tasks.
     private let reconnectQueue = DispatchQueue(label: "com.tigrechat.reconnect")
+    /// XEP-0237: versión del roster persistida entre sesiones (UserDefaults).
+    private static let rosterVersionKey = "roster_version"
 
     init() {
         connection = XMPPConnection()
@@ -68,6 +78,9 @@ actor XMPPClient {
         var msgCont: AsyncStream<Message>.Continuation?
         messageStream = AsyncStream { continuation in msgCont = continuation }
         messageContinuation = msgCont
+        var retrCont: AsyncStream<String>.Continuation?
+        retractionStream = AsyncStream { continuation in retrCont = continuation }
+        retractionContinuation = retrCont
         var presCont: AsyncStream<PresenceStanza>.Continuation?
         presenceStream = AsyncStream { continuation in presCont = continuation }
         presenceContinuation = presCont
@@ -105,7 +118,22 @@ actor XMPPClient {
             for await data in await connection.receiveStream {
                 await parser.appendData(data)
             }
+            // El stream de datos terminó (socket caído o disconnect explícito).
+            await self.handleConnectionClosed()
         }
+    }
+
+    /// El socket se cerró sin un `disconnect()` explícito: marca el estado de
+    /// no autenticado (necesario para que `reconnectIfNeeded` no se bloquee),
+    /// avisa a los listeners y relanza la reconexión con backoff.
+    private func handleConnectionClosed() async {
+        guard shouldAutoReconnect, isAuthenticated else { return }
+        isAuthenticated = false
+        currentJID = nil
+        lastStreamFeatures = nil
+        authStateContinuation?.yield(false)
+        await iqDispatcher.cancelAll(reason: XMPPError.notConnected)
+        await reconnectIfNeeded()
     }
 
     func setup(host: String, port: Int = 5222, useDirectTLS: Bool = false, domain: String? = nil) {
@@ -126,16 +154,22 @@ actor XMPPClient {
 
         if !useDirectTLS, let features = lastStreamFeatures {
             if features.startTLSRequired || features.startTLSAvailable {
-                os_log("[Client] STARTTLS available, reconnecting with DirectTLS on same port", log: xmppLog, type: .info)
-                await connection.disconnect()
-                try await Task.sleep(nanoseconds: 200_000_000)
-                useDirectTLS = true
-                try await connection.connect(host: serverHost, port: serverPort, useTLS: true)
-                await parser.reset()
-                try await sendStreamOpen()
-                lastStreamFeatures = try await waitForFeatures(timeout: 10)
+                try await negotiateStartTLS()
             }
         }
+    }
+
+    /// XEP-0115 STARTTLS, in-band: the server advertises `<starttls>` in the
+    /// stream features, we request it on the SAME connection and the transport
+    /// upgrades the existing socket to TLS after `<proceed/>`.
+    private func negotiateStartTLS() async throws {
+        os_log("[Client] STARTTLS in-band upgrade", log: xmppLog, type: .info)
+        try await connection.send(string: "<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+        try await waitForTLSProceed(timeout: 10)
+        try await connection.startTLS(domain: serverDomain)
+        await parser.reset()
+        try await sendStreamOpen()
+        lastStreamFeatures = try await waitForFeatures(timeout: 10)
     }
 
     private func sendStreamOpen() async throws {
@@ -172,6 +206,16 @@ actor XMPPClient {
         if pathMonitor == nil {
             startReconnectMonitoring()
         }
+        // XEP-0280: recibir ecos de mensajes de otros dispositivos.
+        try? await enableCarbons()
+        // XEP-0384: publicar bundle y lista de dispositivos OMEMO (PEP).
+        // Best-effort: un fallo de PEP no debe bloquear la autenticación.
+        if let module = omemoModule {
+            await module.attach(dispatcher: iqDispatcher)
+            try? await module.publishBundle()
+            try? await module.publishDeviceList(devices: [await module.localDeviceId])
+        }
+        startKeepAlive()
     }
 
     private func performSASLAuth(username: String, password: String, features: StreamFeatures?) async throws {
@@ -289,6 +333,27 @@ actor XMPPClient {
         }
     }
 
+    /// Waits for the server's `<proceed/>` (or `<failure/>`) after we asked
+    /// for STARTTLS.
+    private func waitForTLSProceed(timeout: TimeInterval) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { throw XMPPError.authFailed("Client deallocated") }
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    Task { [weak self] in
+                        await self?.setTLSContinuation(continuation)
+                    }
+                }
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw XMPPError.timedOut
+            }
+            try await group.next()!
+            group.cancelAll()
+        }
+    }
+
     /// Espera la respuesta IQ para el id dado. El `IQDispatcher` correlaciona
     /// por id, permitiendo múltiples peticiones IQ concurrentes.
     private func waitForIQResult(id: String, timeout: TimeInterval) async throws -> IQStanza {
@@ -307,12 +372,28 @@ actor XMPPClient {
         featuresContinuation = continuation
     }
 
+    private func setTLSContinuation(_ continuation: CheckedContinuation<Void, any Error>) {
+        tlsContinuation = continuation
+    }
+
     private func bindResource() async throws {
         let id = nextID()
-        let resource = "TigreChat-" + String(id.suffix(4))
+        // Resource ÚNICO por instancia: derivarlo del contador (tc1, tc2...)
+        // colisiona cuando dos clientes de la misma cuenta arrancan en paralelo
+        // (ambos usan "TigreChat-tc1" → el servidor mezcla las rutas y las
+        // respuestas IQ llegan a la sesión equivocada). Usamos un sufijo
+        // aleatorio por instancia.
+        let resource = "TigreChat-" + String(UUID().uuidString.prefix(8))
         let xml = "<iq id='\(id)' type='set'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>\(resource)</resource></bind></iq>"
+        os_log("[Client] bindResource send id=%@ resource=%@", log: xmppLog, type: .debug, id, resource)
         try await connection.send(string: xml)
-        _ = try await waitForIQResult(id: id, timeout: 10)
+        do {
+            _ = try await waitForIQResult(id: id, timeout: 10)
+            os_log("[Client] bindResource OK id=%@", log: xmppLog, type: .info, id)
+        } catch {
+            os_log("[Client] bindResource FAILED id=%@ err=%@", log: xmppLog, type: .error, id, String(describing: error))
+            throw error
+        }
     }
 
     private func bindSession() async throws {
@@ -324,25 +405,125 @@ actor XMPPClient {
 
     /// Pide el roster al servidor (RFC 6121). Devuelve los items parseados y
     /// los publica en `rosterStream`.
+    ///
+    /// XEP-0237 / RFC 6121 §2.6: envía el `ver` persistido del último roster.
+    /// Si el servidor responde vacío CON `ver`, nada cambió y NO se publican
+    /// items (los datos locales siguen siendo válidos). Si responde con
+    /// `item-not-found`, la versión es inválida: se resetea y se reintenta una
+    /// vez sin `ver` (bootstrap completo).
     private func requestRoster() async throws -> [RosterItem] {
+        let ver = UserDefaults.standard.string(forKey: Self.rosterVersionKey) ?? ""
+        let verAttr = ver.isEmpty ? "" : " ver='\(ver)'"
         let id = nextID()
-        let xml = "<iq id='\(id)' type='get'><query xmlns='jabber:iq:roster'/></iq>"
+        let xml = "<iq id='\(id)' type='get'><query xmlns='jabber:iq:roster'\(verAttr)/></iq>"
         try await connection.send(string: xml)
-        let result = try await waitForIQResult(id: id, timeout: 10)
+
+        let result: IQStanza
+        do {
+            result = try await waitForIQResult(id: id, timeout: 10)
+        } catch {
+            if case XMPPError.iqError(let raw) = error, raw.contains("item-not-found") {
+                UserDefaults.standard.removeObject(forKey: Self.rosterVersionKey)
+                let retryID = nextID()
+                let retryXML = "<iq id='\(retryID)' type='get'><query xmlns='jabber:iq:roster'/></iq>"
+                try await connection.send(string: retryXML)
+                result = try await waitForIQResult(id: retryID, timeout: 10)
+            } else {
+                throw error
+            }
+        }
+
         let items = RosterParser.parseItems(from: result.rawXML)
-        rosterContinuation?.yield(items)
+        let serverVer = RosterParser.parseVersion(from: result.rawXML)
+        if let serverVer {
+            UserDefaults.standard.set(serverVer, forKey: Self.rosterVersionKey)
+        }
+        // Respuesta vacía CON ver = no change: conservar los datos locales.
+        if !items.isEmpty || serverVer == nil {
+            rosterContinuation?.yield(items)
+        }
         return items
+    }
+
+    func refreshRoster() async throws -> [RosterItem] {
+        try await requestRoster()
+    }
+
+    /// XEP-0313: última página del archivo global (catch-up de mensajes).
+    /// Los mensajes se deduplican por id al persistir en el repositorio.
+    func syncRecentMessages(limit: Int = 20) async throws -> [Message] {
+        let bareJID = (currentJID ?? "").components(separatedBy: "/").first ?? ""
+        return try await mamManager.requestRecentGlobal(localJID: bareJID, limit: limit)
     }
 
     private func sendInitialPresence() async throws {
         try await connection.send(string: "<presence/>")
     }
 
-    func sendMessage(body: String, to jid: String) async throws {
-        let id = nextID()
-        // XEP-0184: pedimos confirmación de entrega al destinatario.
-        let xml = "<message id='\(id)' to='\(jid)' type='chat'><body>\(body.xmlEscaped)</body><request xmlns='urn:xmpp:receipts'/></message>"
+    /// Envía un mensaje 1:1. Con `omemo = true` el cuerpo se cifra con
+    /// XEP-0384: el `<encrypted>` devuelto por el módulo se inserta como XML
+    /// crudo y el `<body>` queda vacío (sin texto plano). Fase A: los adjuntos
+    /// (oob) no se cifran.
+    func sendMessage(id: String = UUID().uuidString, body: String, to jid: String, oobURL: String? = nil, omemo: Bool = false) async throws {
+        if omemo {
+            guard let module = omemoModule else { throw OMEMOError.notReady }
+            let encrypted = try await module.encryptOutgoingMessage(text: body, to: jid)
+            let xml = "<message id='\(id)' to='\(jid)' type='chat'><body/>\(encrypted)<request xmlns='urn:xmpp:receipts'/></message>"
+            try await connection.send(string: xml)
+            return
+        }
+        // El id lo decide el llamador (el repositorio usa el id del Message)
+        // para poder deduplicar el eco de carbons propio.
+        var xml = "<message id='\(id)' to='\(jid)' type='chat'><body>\(body.xmlEscaped)</body>"
+        // XEP-0066: el adjunto viaja como oob para que el receptor lo detecte
+        // como archivo y no lo muestre como texto plano.
+        if let oobURL {
+            xml += "<x xmlns='jabber:x:oob'><url>\(oobURL.xmlEscaped)</url></x>"
+        }
+        xml += "<request xmlns='urn:xmpp:receipts'/></message>"
         try await connection.send(string: xml)
+    }
+
+    /// XEP-0424: pide al servidor retractar un mensaje ya enviado.
+    func sendRetraction(for messageID: String, to jid: String) async throws {
+        let id = nextID()
+        let xml = "<message id='\(id)' to='\(jid)' type='chat'><retract xmlns='urn:xmpp:message-retract:1' id='\(messageID)'/></message>"
+        try await connection.send(string: xml)
+    }
+
+    /// XEP-0313: última página del archivo de una sala MUC (historial de grupo).
+    func syncMUCArchive(jid: String, limit: Int = 50) async throws -> [Message] {
+        let bareJID = (currentJID ?? "").components(separatedBy: "/").first ?? ""
+        return try await mamManager.requestArchive(jid: jid, localJID: bareJID, limit: limit)
+    }
+
+    private func sendPing() async {
+        let id = nextID()
+        try? await connection.send(string: "<iq id='\(id)' type='get'><ping xmlns='urn:xmpp:ping'/></iq>")
+    }
+
+    // MARK: - Keepalive (XEP-0199)
+
+    private var keepAliveTask: Task<Void, Never>?
+
+    private func startKeepAlive() {
+        guard keepAliveTask == nil else { return }
+        keepAliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard let self else { return }
+                if await self.isAuthenticated { await self.sendPing() }
+            }
+        }
+    }
+
+    // MARK: - Carbons (XEP-0280)
+
+    private func enableCarbons() async {
+        let id = nextID()
+        try? await connection.send(string: "<iq id='\(id)' type='set'><enable xmlns='urn:xmpp:carbons:2'/></iq>")
+        // Fire-and-forget: si el servidor no lo soporta, el IQ error es una
+        // early response que el dispatcher descarta.
     }
 
     func sendGroupchatMessage(body: String, to roomJID: String) async throws {
@@ -355,6 +536,8 @@ actor XMPPClient {
 
     func disconnect() async {
         shouldAutoReconnect = false
+        keepAliveTask?.cancel()
+        keepAliveTask = nil
         stopReconnectMonitoring()
         isAuthenticated = false
         currentJID = nil
@@ -370,9 +553,17 @@ actor XMPPClient {
     private let chatStateTypes: Set<String> = ["composing", "paused", "active", "inactive", "gone"]
 
     private func handleStanza(_ stanza: XMPPStanza) async {
+        os_log("[Client] handleStanza start", log: xmppLog, type: .debug)
         switch stanza {
         case .streamOpen:
             break
+
+        case .starttls:
+            break
+
+        case .proceed:
+            tlsContinuation?.resume()
+            tlsContinuation = nil
 
         case .streamFeatures(let features):
             lastStreamFeatures = features
@@ -380,6 +571,19 @@ actor XMPPClient {
             featuresContinuation = nil
 
         case .message(let msgStanza):
+            // XEP-0424: retracción entrante → el repositorio borra y tombstona.
+            if let retractedID = RetractionParser.parseID(from: msgStanza.xml) {
+                retractionContinuation?.yield(retractedID)
+                return
+            }
+
+            // XEP-0280: eco de carbons (otro dispositivo) → se trata como
+            // mensaje normal (deduplicado por id en el repositorio).
+            if let carbon = CarbonParser.parse(from: msgStanza.xml) {
+                messageContinuation?.yield(carbon)
+                return
+            }
+
             let from = msgStanza.from ?? ""
             let conversationId = msgStanza.type == "groupchat"
                 ? (from.components(separatedBy: "/").first ?? from)
@@ -404,17 +608,34 @@ actor XMPPClient {
 
             if msgStanza.xml.contains("urn:xmpp:omemo:0") {
                 await handleOMEMOMessage(stanza: msgStanza, from: from, conversationId: conversationId)
-            } else if let body = msgStanza.body {
-                let message = Message(
-                    id: msgStanza.id,
-                    conversationId: conversationId,
-                    senderJID: from,
-                    text: body,
-                    timestamp: msgStanza.timestamp ?? Date(),
-                    isOutgoing: false,
-                    status: .delivered
-                )
-                messageContinuation?.yield(message)
+            } else {
+                // Adjuntos: XEP-0066 oob, o body que sea URL de HTTP Upload.
+                let attachment = AttachmentParser.parse(from: msgStanza.xml, body: msgStanza.body ?? "")
+                if let body = msgStanza.body, attachment == nil {
+                    let message = Message(
+                        id: msgStanza.id,
+                        conversationId: conversationId,
+                        senderJID: from,
+                        text: body,
+                        timestamp: msgStanza.timestamp ?? Date(),
+                        isOutgoing: false,
+                        status: .delivered
+                    )
+                    messageContinuation?.yield(message)
+                } else if attachment != nil {
+                    let message = Message(
+                        id: msgStanza.id,
+                        conversationId: conversationId,
+                        senderJID: from,
+                        text: msgStanza.body ?? "",
+                        timestamp: msgStanza.timestamp ?? Date(),
+                        isOutgoing: false,
+                        status: .delivered,
+                        type: .file,
+                        attachment: attachment
+                    )
+                    messageContinuation?.yield(message)
+                }
             }
 
             // XEP-0184: acuse automático de entrega (solo a contactos, no a ecos propios).
@@ -428,6 +649,13 @@ actor XMPPClient {
 
         case .presence(let presStanza):
             let from = presStanza.from ?? ""
+            // Auto-aceptar solicitudes de suscripción entrantes (paridad con
+            // el cliente Android: subscriptionMode accept_all). Solo 1:1;
+            // las presencias MUC no son suscripciones.
+            if presStanza.type == "subscribe", !from.isEmpty,
+               !(from.contains("@muc.") || from.contains("@conference.")) {
+                try? await connection.send(string: "<presence type='subscribed' to='\(from)'/>")
+            }
             if from.contains("@muc.") || from.contains("@conference.") {
             }
             presenceContinuation?.yield(presStanza)
@@ -450,12 +678,20 @@ actor XMPPClient {
                 featuresContinuation?.resume(throwing: XMPPError.authFailed(text))
                 featuresContinuation = nil
             }
+            if tlsContinuation != nil {
+                tlsContinuation?.resume(throwing: XMPPError.tlsFailed("STARTTLS rejected by server: \(text)"))
+                tlsContinuation = nil
+            }
 
         case .iq(let iqStanza):
+            os_log("[Client] IQ %{public}s type=%{public}s", log: xmppLog, type: .debug, iqStanza.id, iqStanza.type.rawValue)
             // Primero intenta resolver una petición local pendiente por id.
             // Si nadie la esperaba, es un push no solicitado (roster push, Jingle...).
             if let unmatched = await iqDispatcher.deliver(iqStanza) {
+                os_log("[Client] IQ unmatched %{public}s -> unsolicited", log: xmppLog, type: .debug, iqStanza.id)
                 await handleUnsolicitedIQ(unmatched)
+            } else {
+                os_log("[Client] IQ %{public}s consumed by dispatcher", log: xmppLog, type: .debug, iqStanza.id)
             }
 
         default:
@@ -477,6 +713,10 @@ actor XMPPClient {
         }
         // Roster push (RFC 6121 §2.1.6): el servidor notifica cambios de roster
         if stanza.type == .set, stanza.rawXML.contains("jabber:iq:roster") {
+            // El push también lleva el ver vigente: persistirlo (XEP-0237).
+            if let serverVer = RosterParser.parseVersion(from: stanza.rawXML) {
+                UserDefaults.standard.set(serverVer, forKey: Self.rosterVersionKey)
+            }
             let items = RosterParser.parseItems(from: stanza.rawXML)
             rosterContinuation?.yield(items)
             // Confirmar el push

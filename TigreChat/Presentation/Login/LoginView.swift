@@ -29,13 +29,13 @@ struct LoginView: View {
             VStack(spacing: Theme.Layout.spacing16) {
                 TextField("Server (optional)", text: $viewModel.server)
                     .textContentType(.URL)
-                    .autocapitalization(.none)
+                    .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                     .textFieldStyle(.roundedBorder)
 
                 TextField("JID (user@domain)", text: $viewModel.jid)
                     .textContentType(.username)
-                    .autocapitalization(.none)
+                    .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                     .textFieldStyle(.roundedBorder)
                     .keyboardType(.emailAddress)

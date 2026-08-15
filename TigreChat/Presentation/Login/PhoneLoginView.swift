@@ -11,10 +11,11 @@ struct PhoneLoginView: View {
 
     /// Classic JID/password login, kept reachable until SMS auth is live.
     let manualLogin: LoginView
-    /// Called after the OTP is verified (backend wiring still pending).
-    let onVerified: () -> Void
+    /// Called after the OTP is verified with the provisioned XMPP credentials.
+    /// Throws if the XMPP connection fails so the OTP screen can retry.
+    let onVerified: (AuthCredentials) async throws -> Void
 
-    init(viewModel: PhoneLoginViewModel, manualLogin: LoginView, onVerified: @escaping () -> Void) {
+    init(viewModel: PhoneLoginViewModel, manualLogin: LoginView, onVerified: @escaping (AuthCredentials) async throws -> Void) {
         _viewModel = State(initialValue: viewModel)
         self.manualLogin = manualLogin
         self.onVerified = onVerified
@@ -83,7 +84,7 @@ struct PhoneLoginView: View {
                 Button {
                     Task {
                         await viewModel.requestCode()
-                        if viewModel.generatedCode != nil {
+                        if viewModel.maskedPhone != nil {
                             showOTP = true
                         }
                     }
@@ -115,14 +116,11 @@ struct PhoneLoginView: View {
             .navigationDestination(isPresented: $showOTP) {
                 OTPView(
                     viewModel: OTPViewModel(
-                        expectedCode: viewModel.generatedCode,
-                        resendCode: {
-                            await viewModel.requestCode()
-                            return viewModel.generatedCode
-                        }
+                        service: viewModel.service,
+                        phone: viewModel.fullNumber,
+                        onVerified: onVerified
                     ),
-                    maskedPhone: viewModel.maskedPhone ?? viewModel.fullNumber,
-                    onVerified: onVerified
+                    maskedPhone: viewModel.maskedPhone ?? viewModel.fullNumber
                 )
             }
             .sheet(isPresented: $showManualLogin) {

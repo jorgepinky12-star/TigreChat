@@ -6,7 +6,7 @@ let xmppLog = OSLog(subsystem: "com.tigrechat", category: "XMPP")
 @MainActor
 @Observable
 final class LoginViewModel {
-    var server: String = "ims-bzr.z17.cu"
+    var server: String = "ims-brz.z17.cu"
     var jid: String = ""
     var password: String = ""
     var isLoading = false
@@ -22,36 +22,12 @@ final class LoginViewModel {
     }
 
     private func resolveConnectionStrategies(_ domain: String) async -> [(host: String, port: Int, useTLS: Bool)] {
-        var strategies: [(String, Int, Bool)] = []
-
-        // Explicit server configured: connect directly to that host on the
-        // standard XMPP client port (5222, STARTTLS negotiated in-band) first.
-        if !server.isEmpty {
-            strategies.append((server, 5222, false))
-        }
-
-        do {
-            let resolver = XMPPSRVResolver()
-            let (record, service) = try await resolver.resolve(domain: domain)
-            let isDirectTLS = service == .xmppsClient
-            os_log("[XMPP] SRV: %{public}s:%d (service=%{public}s, prio=%d)",
-                   log: xmppLog, type: .info, record.host, record.port, service.rawValue, record.priority)
-            strategies.append((record.host, record.port, isDirectTLS))
-        } catch {
-            os_log("[XMPP] SRV failed: %{public}s", log: xmppLog, type: .error, String(describing: error))
-        }
-
-        strategies.append(("xmpps.\(domain)", 443, true))
-        strategies.append((domain, 5223, true))
-        strategies.append((domain, 5222, false))
-        strategies.append((domain, 443, true))
-
-        return strategies
+        await XMPPConnectionStrategies.resolve(server: server, domain: domain)
     }
 
     func login() async {
         guard !jid.isEmpty, !password.isEmpty else {
-            errorMessage = "Please enter JID and password"
+            errorMessage = String(localized: "Please enter JID and password")
             return
         }
         isLoading = true
@@ -81,7 +57,7 @@ final class LoginViewModel {
             }
         }
 
-        errorMessage = "Could not connect to \(domain). Check your server address and try again."
+        errorMessage = String(localized: "Could not connect to \(domain). Check your server address and try again.")
         isLoading = false
     }
 

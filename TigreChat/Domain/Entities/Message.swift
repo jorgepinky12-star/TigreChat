@@ -10,6 +10,8 @@ struct Message: Identifiable, Hashable, Sendable {
     var status: MessageStatus
     var type: MessageType
     var isEncrypted: Bool
+    /// Adjunto (imagen/audio/video/archivo): nil para mensajes de texto.
+    var attachment: FileAttachment?
 
     init(
         id: String = UUID().uuidString,
@@ -20,7 +22,8 @@ struct Message: Identifiable, Hashable, Sendable {
         isOutgoing: Bool,
         status: MessageStatus = .sending,
         type: MessageType = .text,
-        isEncrypted: Bool = false
+        isEncrypted: Bool = false,
+        attachment: FileAttachment? = nil
     ) {
         self.id = id
         self.conversationId = conversationId
@@ -31,6 +34,7 @@ struct Message: Identifiable, Hashable, Sendable {
         self.status = status
         self.type = type
         self.isEncrypted = isEncrypted
+        self.attachment = attachment
     }
 }
 
@@ -40,11 +44,15 @@ enum MessageStatus: String, Sendable {
     case delivered
     case read
     case failed
+    /// Persistido localmente tras un envío fallido por desconexión; se
+    /// reintenta al reconectar (outbox).
+    case pending
 }
 
 enum MessageType: String, Sendable {
     case text
     case image
+    case audio
     case file
     case system
 }

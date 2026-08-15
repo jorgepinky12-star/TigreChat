@@ -11,9 +11,10 @@ final class ConversationEntity {
     var unreadCount: Int
     var isGroup: Bool
     var isMuted: Bool
+    var omemoEnabled: Bool = false
     @Relationship var messages: [MessageEntity]?
 
-    init(jid: String, title: String, avatarURL: URL? = nil, lastMessage: String? = nil, lastTimestamp: Date? = nil, unreadCount: Int = 0, isGroup: Bool = false, isMuted: Bool = false) {
+    init(jid: String, title: String, avatarURL: URL? = nil, lastMessage: String? = nil, lastTimestamp: Date? = nil, unreadCount: Int = 0, isGroup: Bool = false, isMuted: Bool = false, omemoEnabled: Bool = false) {
         self.jid = jid
         self.title = title
         self.avatarURL = avatarURL
@@ -22,6 +23,7 @@ final class ConversationEntity {
         self.unreadCount = unreadCount
         self.isGroup = isGroup
         self.isMuted = isMuted
+        self.omemoEnabled = omemoEnabled
     }
 
     convenience init(from conversation: Conversation) {
@@ -33,7 +35,8 @@ final class ConversationEntity {
             lastTimestamp: conversation.lastTimestamp,
             unreadCount: conversation.unreadCount,
             isGroup: conversation.isGroup,
-            isMuted: conversation.isMuted
+            isMuted: conversation.isMuted,
+            omemoEnabled: conversation.omemoEnabled
         )
     }
 
@@ -47,7 +50,8 @@ final class ConversationEntity {
             unreadCount: unreadCount,
             isGroup: isGroup,
             participants: [],
-            isMuted: isMuted
+            isMuted: isMuted,
+            omemoEnabled: omemoEnabled
         )
     }
 }

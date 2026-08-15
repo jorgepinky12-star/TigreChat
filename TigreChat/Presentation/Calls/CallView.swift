@@ -47,10 +47,14 @@ struct CallView: View {
             }
             .padding(.bottom, 50)
         }
-        .onChange(of: viewModel.call?.state) { _, state in
-            if state == .ended || state == .failed || state == .missed {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { onDismiss() }
-            }
+        // Auto-dismiss a finished call after a short delay so the user sees
+        // the final state. `.task(id:)` cancels the previous task when the
+        // state changes and when the view disappears.
+        .task(id: viewModel.call?.state) {
+            guard let state = viewModel.call?.state,
+                  state == .ended || state == .failed || state == .missed else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            onDismiss()
         }
     }
 

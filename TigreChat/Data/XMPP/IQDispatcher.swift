@@ -12,11 +12,27 @@ actor IQDispatcher {
 
     private var pending: [String: Pending] = [:]
 
+    /// Respuestas `result`/`error` que llegaron antes de que su emisor
+    /// registrara la espera. La carrera real: `send()` → respuesta del
+    /// servidor → `deliver()` corren en el receive loop ANTES de que el
+    /// actor del cliente llegue a `wait()`, y la respuesta se descartaba
+    /// como "unmatched". Con redes rápidas (simulador/localhost) eso rompía
+    /// el bind justo después del SASL.
+    private var earlyResponses: [String: IQStanza] = [:]
+    private var earlyOrder: [String] = []
+    private let earlyCapacity = 32
+
     /// Registra una espera para el `id` dado. La respuesta (o un error) se
     /// entrega cuando `deliver(_:)` recibe el stanza correspondiente, o expira
     /// con `XMPPError.timedOut` si no llega dentro de `timeout`.
     func wait(for id: String, timeout: TimeInterval) async throws -> IQStanza {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<IQStanza, any Error>) in
+        // La respuesta pudo llegar antes de esta llamada (carrera tras el
+        // envío): consumirla directamente en vez de esperar 10 s en vano.
+        if let early = earlyResponses.removeValue(forKey: id) {
+            earlyOrder.removeAll { $0 == id }
+            return early
+        }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<IQStanza, any Error>) in
             let timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 guard let self else { return }
@@ -40,6 +56,19 @@ actor IQDispatcher {
     func deliver(_ stanza: IQStanza) -> IQStanza? {
         let id = stanza.id
         guard !id.isEmpty, let entry = pending.removeValue(forKey: id) else {
+            // Nadie esperaba todavía. Si es una respuesta (no un push),
+            // retenerla brevemente por si el emisor registra su espera justo
+            // después del envío; si es un push, se devuelve sin guardar.
+            if !id.isEmpty, stanza.type == .result || stanza.type == .error {
+                if earlyResponses[id] == nil {
+                    earlyOrder.append(id)
+                    if earlyOrder.count > earlyCapacity {
+                        let evicted = earlyOrder.removeFirst()
+                        earlyResponses.removeValue(forKey: evicted)
+                    }
+                }
+                earlyResponses[id] = stanza
+            }
             return stanza
         }
         entry.timeoutTask?.cancel()
@@ -63,6 +92,8 @@ actor IQDispatcher {
             entry.continuation.resume(throwing: reason)
         }
         pending.removeAll()
+        earlyResponses.removeAll()
+        earlyOrder.removeAll()
     }
 
     private func timeout(id: String) {

@@ -11,6 +11,8 @@ struct Conversation: Identifiable, Hashable, Sendable {
     var isGroup: Bool
     var participants: [User]
     var isMuted: Bool
+    /// XEP-0384: el envío de textos de esta conversación se cifra con OMEMO.
+    var omemoEnabled: Bool
 
     init(
         jid: String,
@@ -21,7 +23,8 @@ struct Conversation: Identifiable, Hashable, Sendable {
         unreadCount: Int = 0,
         isGroup: Bool = false,
         participants: [User] = [],
-        isMuted: Bool = false
+        isMuted: Bool = false,
+        omemoEnabled: Bool = false
     ) {
         self.id = jid
         self.jid = jid
@@ -33,5 +36,6 @@ struct Conversation: Identifiable, Hashable, Sendable {
         self.isGroup = isGroup
         self.participants = participants
         self.isMuted = isMuted
+        self.omemoEnabled = omemoEnabled
     }
 }

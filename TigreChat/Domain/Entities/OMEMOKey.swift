@@ -36,36 +36,6 @@ struct PreKeyPublic: Sendable {
     let publicKey: Data
 }
 
-struct OMEMOSessionState: Codable, Sendable {
-    let jid: String
-    let deviceId: UInt32
-    var rootKey: Data
-    var sendingChainKey: Data
-    var receivingChainKey: Data?
-    var sendingDHKeyPair: DHKeyPair?
-    var receivingDHPublicKey: Data?
-    var sendingChainIndex: UInt32
-    var receivingChainIndex: UInt32
-}
-
-struct DHKeyPair: Codable, Sendable {
-    let publicKey: Data
-    let privateKey: Data
-}
-
-struct EncryptedPayload: Sendable {
-    let iv: Data
-    let ciphertext: Data
-    let authTag: Data
-    let senderDeviceId: UInt32
-    let senderIdentityKey: Data
-    let receiverIdentityKey: Data
-    let preKeyId: UInt32?
-    let signedPreKeyId: UInt32
-    let ratchetKey: Data
-    let isPreKeyMessage: Bool
-}
-
 /// Modelo de verificación de identidad (huella) de un contacto.
 struct FingerprintInfo: Sendable {
     let jid: String

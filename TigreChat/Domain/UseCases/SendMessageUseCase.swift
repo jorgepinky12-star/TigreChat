@@ -7,7 +7,7 @@ struct SendMessageUseCase: Sendable {
         self.messageRepository = messageRepository
     }
 
-    func execute(text: String, to jid: String) async throws -> Message {
+    func execute(text: String, to jid: String) async throws -> Bool {
         let message = Message(
             conversationId: jid,
             senderJID: "",
@@ -15,7 +15,6 @@ struct SendMessageUseCase: Sendable {
             isOutgoing: true,
             status: .sending
         )
-        try await messageRepository.send(message: message)
-        return message
+        return try await messageRepository.send(message: message)
     }
 }

@@ -86,8 +86,68 @@ actor XMPPMAMManager {
             xml += """
               <before>\(escapeXML(pageID))</before>
             """
+        } else if before == nil {
+            // Sin filtro temporal: pedimos la página final (los más recientes),
+            // igual que el historial de la app de Android.
+            xml += """
+              <before/>
+            """
         }
         xml += """
+            </set>
+          </query>
+        </iq>
+        """
+
+        iqIDToQueryID[id] = queryID
+        pendingQueries[queryID] = PendingQuery()
+        try await connection.send(string: xml)
+
+        // Espera el cierre de la query (IQ result con <fin>) o el timeout.
+        let finID = id
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [dispatcher] in
+                guard let dispatcher else { throw XMPPError.notConnected }
+                _ = try await dispatcher.wait(for: finID, timeout: 30)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 31_000_000_000)
+                throw XMPPError.timedOut
+            }
+            do {
+                try await group.next()
+                group.cancelAll()
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
+
+        let messages = pendingQueries.removeValue(forKey: queryID)?.messages ?? []
+        iqIDToQueryID.removeValue(forKey: id)
+        return messages
+    }
+
+    /// Pide la página MÁS RECIENTE del archivo global (sin filtro `with`,
+    /// XEP-0313) — equivalente a `queryMostRecentPage(null, 20)` del cliente
+    /// Android: RSM `<before/>` (página final) + `<max>`. Usado para el
+    /// catch-up de mensajes al refrescar la lista de chats.
+    func requestRecentGlobal(localJID: String, limit: Int = 20) async throws -> [Message] {
+        setLocalJID(localJID)
+        let id = nextID()
+        let queryID = UUID().uuidString
+
+        let xml = """
+        <iq id='\(id)' type='set'>
+          <query xmlns='urn:xmpp:mam:2' queryid='\(queryID)'>
+            <x xmlns='jabber:x:data' type='submit'>
+              <field var='FORM_TYPE' type='hidden'>
+                <value>urn:xmpp:mam:2</value>
+              </field>
+            </x>
+            <set xmlns='http://jabber.org/protocol/rsm'>
+              <max>\(limit)</max>
+              <before/>
             </set>
           </query>
         </iq>
@@ -151,6 +211,7 @@ actor XMPPMAMManager {
             ? from.components(separatedBy: "/").first ?? from
             : from
         let delay = extractDelayTimestamp(from: msgXML)
+        let attachment = AttachmentParser.parse(from: msgXML, body: body)
 
         return Message(
             id: id,
@@ -159,7 +220,9 @@ actor XMPPMAMManager {
             text: body,
             timestamp: delay ?? Date(),
             isOutgoing: !to.isEmpty && to == localJID,
-            status: .delivered
+            status: .delivered,
+            type: attachment == nil ? .text : .file,
+            attachment: attachment
         )
     }
 

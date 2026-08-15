@@ -4,21 +4,40 @@ import Security
 import UIKit
 
 @MainActor final class KeyManager {
-    private let service = "com.tigrechat.omemo"
+    private let service: String
     private let identityTag = "identity"
     private let signedPreKeyTag = "signedprekey"
     private let preKeyPrefix = "prekey"
-    private let sessionPrefix = "session"
 
     private(set) var deviceId: UInt32
     private(set) var identityKeyPair: IdentityKeyPair?
     private(set) var signedPreKey: SignedPreKey?
     private(set) var preKeys: [PreKey] = []
 
-    init() {
-        deviceId = UInt32(abs(UIDevice.current.identifierForVendor?.hashValue ?? Int.random(in: 0..<Int.max)) % 1_000_000)
-        identityKeyPair = nil
+    /// - Parameter deviceId: override para tests (dos dispositivos en un mismo
+    ///   proceso); por defecto deriva uno estable del hardware.
+    /// - Parameter service: servicio Keychain (los tests lo aíslan por
+    ///   dispositivo para no colisionar identidad/prekeys).
+    init(deviceId: UInt32? = nil, service: String = "com.tigrechat.omemo") {
+        self.service = service
+        self.deviceId = deviceId ?? Self.makeStableDeviceId()
         loadOrCreateKeys()
+    }
+
+    /// Deriva un deviceId estable entre launches. `hashValue` es aleatorio por
+    /// proceso, así que NO se puede usar aquí: un deviceId inestable invalidaría
+    /// las sesiones OMEMO del servidor en cada arranque.
+    private static func makeStableDeviceId() -> UInt32 {
+        guard let vendorId = UIDevice.current.identifierForVendor else {
+            return UInt32.random(in: 0..<1_000_000)
+        }
+        // FNV-1a de 32 bits sobre el UUID: determinista y repartido.
+        var hash: UInt32 = 2_166_136_261
+        for byte in vendorId.uuidString.utf8 {
+            hash ^= UInt32(byte)
+            hash &*= 16_777_619
+        }
+        return hash % 1_000_000
     }
 
     // MARK: - Key Generation
@@ -70,21 +89,55 @@ import UIKit
     }
 
     private func generateSignedPreKey() -> SignedPreKey {
-        let id = UInt32.random(in: 0..<UInt32.max)
+        // El wire format OMEMO (SignalProtocolSwift/protobuf y el resto del
+        // ecosistema: libsignal, smack-omemo) transporta los ids como int32:
+        // un id >= Int32.max desborda y crashea el decode del receptor
+        // (PendingPreKey: `Int32(signedPreKeyId)`). Rango 1...Int32.max.
+        let id = UInt32.random(in: 1...UInt32(Int32.max))
         let keyAgreementKey = CryptoKit.Curve25519.KeyAgreement.PrivateKey()
-        let signingKey = try? CryptoKit.Curve25519.Signing.PrivateKey(rawRepresentation: identityKeyPair!.privateKey)
-        let signature = try! signingKey!.signature(for: keyAgreementKey.publicKey.rawRepresentation)
+        // La identidad se genera en init; este fallback cubre llamadas
+        // defensivas (p.ej. rotateSignedPreKey) sin identidad previa.
+        let identity = identityKeyPair ?? createIdentity()
+
+        // XEdDSA (curve25519_sign de libsignal), NO Ed25519 de CryptoKit: los
+        // clientes OMEMO (Conversations, smack-omemo) verifican la firma del
+        // signed prekey convirtiendo la X25519 pública a Edwards; una firma
+        // Ed25519 estándar no pasa esa verificación.
+        let publicData = keyAgreementKey.publicKey.rawRepresentation
+        var random = Data(count: Curve25519.signatureLength)
+        random.withUnsafeMutableBytes {
+            _ = SecRandomCopyBytes(kSecRandomDefault, Curve25519.signatureLength, $0.baseAddress!)
+        }
+        if let signature = try? Curve25519.signature(for: publicData, privateKey: identity.privateKey, randomData: random) {
+            return SignedPreKey(
+                id: id,
+                publicKey: publicData,
+                privateKey: keyAgreementKey.rawRepresentation,
+                signature: signature
+            )
+        }
+        // Inalcanzable con una clave Curve25519 válida: nunca crashear.
+        assertionFailure("No se pudo firmar la signed prekey")
         return SignedPreKey(
             id: id,
-            publicKey: keyAgreementKey.publicKey.rawRepresentation,
+            publicKey: publicData,
             privateKey: keyAgreementKey.rawRepresentation,
-            signature: signature
+            signature: Data()
         )
+    }
+
+    private func createIdentity() -> IdentityKeyPair {
+        let key = generateIdentityKey()
+        identityKeyPair = key
+        saveIdentityKey(key)
+        return key
     }
 
     private func generatePreKeys(count: Int) -> [PreKey] {
         (0..<count).map { _ in
-            let id = UInt32.random(in: 0..<UInt32.max)
+            // Mismo contrato int32 que generateSignedPreKey: ids en 1...Int32.max
+            // (0 reserva el "sin prekey" en el wire format).
+            let id = UInt32.random(in: 1...UInt32(Int32.max))
             let key = CryptoKit.Curve25519.KeyAgreement.PrivateKey()
             return PreKey(id: id, publicKey: key.publicKey.rawRepresentation, privateKey: key.rawRepresentation)
         }
@@ -146,22 +199,6 @@ import UIKit
         return keys
     }
 
-    // MARK: - Session Storage
-
-    func saveSession(jid: String, deviceId: UInt32, state: OMEMOSessionState) {
-        let data = try? JSONEncoder().encode(state)
-        saveKeychain(data: data ?? Data(), tag: "\(sessionPrefix)_\(jid)_\(deviceId)")
-    }
-
-    func loadSession(jid: String, deviceId: UInt32) -> OMEMOSessionState? {
-        guard let data = loadKeychain(tag: "\(sessionPrefix)_\(jid)_\(deviceId)") else { return nil }
-        return try? JSONDecoder().decode(OMEMOSessionState.self, from: data)
-    }
-
-    func deleteSession(jid: String, deviceId: UInt32) {
-        deleteKeychain(tag: "\(sessionPrefix)_\(jid)_\(deviceId)")
-    }
-
     // MARK: - Keychain Primitives
 
     private func saveKeychain(data: Data, tag: String) {
@@ -199,14 +236,5 @@ import UIKit
         default:
             return nil
         }
-    }
-
-    private func deleteKeychain(tag: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: tag,
-        ]
-        SecItemDelete(query as CFDictionary)
     }
 }

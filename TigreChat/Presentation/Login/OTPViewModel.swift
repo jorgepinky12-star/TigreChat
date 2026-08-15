@@ -8,41 +8,55 @@ final class OTPViewModel {
     var errorMessage: String?
     private(set) var isVerified = false
 
-    /// Code the user must match. Demo-only until the backend exists.
-    var expectedCode: String?
-    /// Invoked on resend; returns the fresh code (nil if unavailable).
-    private let resendCode: () async -> String?
+    /// Demo-only: the code shown in the banner while there is no backend.
+    /// Always nil once `ToDusAuthService` is active (banner disappears).
+    private(set) var demoCode: String?
 
     /// Telegram-style cooldown before the next resend.
     private(set) var resendSecondsRemaining = 0
     let resendCooldown = 30
     private var resendTask: Task<Void, Never>?
 
-    init(expectedCode: String?, resendCode: @escaping () async -> String?) {
-        self.expectedCode = expectedCode
-        self.resendCode = resendCode
+    private let service: AuthService
+    private let phone: String
+    private let onVerified: (AuthCredentials) async throws -> Void
+
+    init(service: AuthService, phone: String, onVerified: @escaping (AuthCredentials) async throws -> Void) {
+        self.service = service
+        self.phone = phone
+        self.onVerified = onVerified
     }
 
     var isCodeComplete: Bool { code.count == 6 }
 
+    /// Pulls the demo banner code from the service (no-op with a real backend).
+    func loadDemoCode() async {
+        demoCode = await service.demoCode
+    }
+
     func verify() async {
         guard isCodeComplete, !isLoading, !isVerified else { return }
-        guard let expected = expectedCode else {
-            errorMessage = "No code was requested"
-            return
-        }
         isLoading = true
         errorMessage = nil
 
-        // TODO(backend): POST /v1/auth/verify { "phone": ..., "code": ... }
-        // The server validates against the hashed OTP (attempts + expiry).
-        try? await Task.sleep(for: .milliseconds(600))
-        if constantTimeEquals(expected, code) {
+        do {
+            let credentials = try await service.verify(code: code)
             isVerified = true
-        } else {
+            do {
+                try await onVerified(credentials)
+            } catch {
+                // La verificación fue correcta pero la conexión XMPP falló:
+                // volver al estado editable y mostrar el error real.
+                isVerified = false
+                errorMessage = (error as? LocalizedError)?.errorDescription
+                    ?? String(localized: "Could not connect to the chat server. Try again.")
+                code = ""
+            }
+        } catch {
             // WhatsApp/Telegram UX: clear the field so the user can retype
             // from scratch after a wrong attempt.
-            errorMessage = "Incorrect code. Try again."
+            errorMessage = (error as? SMSAuthError)?.errorDescription
+                ?? String(localized: "Something went wrong. Try again.")
             code = ""
         }
         isLoading = false
@@ -50,8 +64,12 @@ final class OTPViewModel {
 
     func resend() async {
         guard resendSecondsRemaining == 0 else { return }
-        if let newCode = await resendCode() {
-            expectedCode = newCode
+        do {
+            try await service.requestCode(phone: phone)
+            demoCode = await service.demoCode
+        } catch {
+            errorMessage = (error as? SMSAuthError)?.errorDescription
+                ?? "Could not resend the code. Try again."
         }
         startResendCountdown()
     }
@@ -70,17 +88,5 @@ final class OTPViewModel {
                 self.resendSecondsRemaining -= 1
             }
         }
-    }
-
-    /// Constant-time string comparison so response timing does not leak
-    /// information about the digits (defense in depth; the real check
-    /// happens server-side anyway).
-    private func constantTimeEquals(_ a: String, _ b: String) -> Bool {
-        guard a.count == b.count else { return false }
-        var diff: UInt8 = 0
-        for (x, y) in zip(a.utf8, b.utf8) {
-            diff |= x ^ y
-        }
-        return diff == 0
     }
 }
