@@ -20,4 +20,16 @@ extension Date {
         }
         return formatted(.dateTime.day().month().year())
     }
+
+    /// Label de la píldora separadora de días en el detalle del chat:
+    /// "Hoy", "Ayer" o la fecha completa si es más antigua.
+    func chatDateDivider() -> String {
+        if Calendar.current.isDateInToday(self) {
+            return "Hoy"
+        }
+        if Calendar.current.isDateInYesterday(self) {
+            return "Ayer"
+        }
+        return formatted(.dateTime.day().month().year())
+    }
 }

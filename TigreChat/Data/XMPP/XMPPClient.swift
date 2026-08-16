@@ -52,6 +52,15 @@ private var messageContinuation: AsyncStream<Message>.Continuation?
     /// Resultados MAM (XEP-0313) que consume `XMPPMAMManager`.
     let mamMessageStream: AsyncStream<MessageStanza>
 
+    /// Caja `@unchecked Sendable` para la cola de stanzas: el continuation es
+    /// `Sendable` y `yield` es thread-safe; la caja solo evita la comprobación
+    /// de aislamiento del actor cuando el parser (actor ajeno) encola.
+    private final class StanzaSink: @unchecked Sendable {
+        var continuation: AsyncStream<XMPPStanza>.Continuation?
+    }
+
+    private let stanzaSink = StanzaSink()
+
     private var statusUpdateContinuation: AsyncStream<(id: String, status: MessageStatus)>.Continuation?
     /// Actualizaciones de estado de mensajes (receipts XEP-0184, markers XEP-0333).
     let statusUpdateStream: AsyncStream<(id: String, status: MessageStatus)>
@@ -112,12 +121,30 @@ private var messageContinuation: AsyncStream<Message>.Continuation?
 
         Task { [weak self] in
             guard let self else { return }
+            // Una sola cola de stanzas: el parser encola y UN consumidor
+            // procesa en orden estricto de llegada. Antes se lanzaba un
+            // `Task {}` por stanza sin serializar: dos stanzas del mismo
+            // chunk podían procesarse de forma concurrente y su orden de
+            // llegada al repositorio no estaba garantizado, con lo que el
+            // primer mensaje podía quedar detrás del segundo (o competir
+            // desordenadamente con la copia MAM del catch-up) y la vista
+            // abierta no recibía el evento del mensaje esperado.
+            let stanzaQueue = AsyncStream<XMPPStanza> { continuation in
+                self.stanzaSink.continuation = continuation
+            }
+            let handlerTask = Task { [weak self] in
+                guard let self else { return }
+                for await stanza in stanzaQueue {
+                    await self.handleStanza(stanza)
+                }
+            }
             await parser.setStanzaCallback { [weak self] stanza in
-                Task { [weak self] in await self?.handleStanza(stanza) }
+                self?.stanzaSink.continuation?.yield(stanza)
             }
             for await data in await connection.receiveStream {
                 await parser.appendData(data)
             }
+            handlerTask.cancel()
             // El stream de datos terminó (socket caído o disconnect explícito).
             await self.handleConnectionClosed()
         }
@@ -587,6 +614,9 @@ private var messageContinuation: AsyncStream<Message>.Continuation?
             let from = msgStanza.from ?? ""
             let fromBare = from.components(separatedBy: "/").first ?? from
             let conversationId = fromBare
+            os_log("[Client] message id=%{public}@ conv=%{public}@ hasBody=%d omemo=%d",
+                   log: xmppLog, type: .debug, msgStanza.id, conversationId,
+                   msgStanza.body != nil ? 1 : 0, msgStanza.xml.contains("urn:xmpp:omemo:0") ? 1 : 0)
 
             // MAM (XEP-0313): los resultados del archivo NO son mensajes para la
             // UI; los consume XMPPMAMManager para el catch-up.

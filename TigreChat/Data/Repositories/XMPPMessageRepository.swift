@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftData
 
 /// MainActor-confined: ModelContext is not Sendable, so Apple's documented
@@ -58,15 +59,76 @@ final class XMPPMessageRepository: MessageRepository {
     /// Inserta con dedupe por id: los ecos de carbons (XEP-0280) de un mensaje
     /// propio ya persistido llegan con el mismo id y deben ignorarse.
     private func insertMessage(_ message: Message, incrementUnread: Bool) async {
+        // La heurística corre en ambas vías (inserción nueva y duplicado): un
+        // mensaje entrante del contacto prueba que leyó nuestros envíos.
+        implicitReceipts(for: message)
         let targetID = message.id
+        os_log("[Repo] insert id=%{public}@ conv=%{public}@ body=%{public}@",
+               log: xmppLog, type: .debug, targetID, message.conversationId, message.text)
         let fetch = FetchDescriptor<MessageEntity>(
             predicate: #Predicate { $0.id == targetID }
         )
-        if (try? modelContext.fetch(fetch).first) != nil { return }
+        if let existing = try? modelContext.fetch(fetch).first {
+            // Duplicado (carbons XEP-0280, MAM + live): no se vuelve a escribir,
+            // pero la copia nueva puede traer más contenido — la copia MAM de un
+            // mensaje cifrado llega con texto vacío y la live con el plaintext,
+            // o con status `.delivered` tras un fallo de descifrado previo — así
+            // que se refresca y SIEMPRE se emite el evento del stream. Sin esto,
+            // cuando el primer mensaje llegaba primero por una vía y luego por la
+            // otra, el duplicado se descartaba en silencio y la conversación
+            // abierta no se repintaba hasta que un segundo mensaje generaba otro
+            // evento (síntoma: "el primer mensaje no aparece hasta el segundo").
+            if existing.text.isEmpty, !message.text.isEmpty {
+                existing.text = message.text
+            }
+            if existing.status == .failed, message.status != .failed {
+                existing.status = message.status
+            }
+            if message.isEncrypted { existing.isEncrypted = true }
+            try? modelContext.save()
+            os_log("[Repo] DUP -> refresh + yield id=%{public}@", log: xmppLog, type: .debug, targetID)
+            messageContinuation.yield(message)
+            return
+        }
         modelContext.insert(MessageEntity(from: message))
         try? modelContext.save()
         updateConversationPreview(message, incrementUnread: incrementUnread)
+        os_log("[Repo] NEW -> saved + yield id=%{public}@", log: xmppLog, type: .debug, targetID)
         messageContinuation.yield(message)
+    }
+
+    /// Heurística de palomitas (fallback): si el otro cliente no manda receipts
+    /// (XEP-0184) ni markers (XEP-0333), la única señal de que recibió y leyó
+    /// nuestros mensajes es su siguiente mensaje. Al llegar un mensaje 1:1
+    /// entrante, los salientes previos de la conversación avanzan un escalón:
+    /// `.sent` → `.delivered` y `.delivered` → `.read`. La vía protocolo sigue
+    /// teniendo prioridad (applyStatusUpdate la sobrescribe).
+    private func implicitReceipts(for incoming: Message) {
+        guard !incoming.isOutgoing,
+              !incoming.conversationId.contains("@muc."),
+              !incoming.conversationId.contains("@conference.") else { return }
+        let convId = bareJID(incoming.conversationId)
+        let fetch = FetchDescriptor<MessageEntity>(
+            predicate: #Predicate { $0.conversationId == convId && $0.isOutgoing },
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
+        )
+        var changed = false
+        for entity in (try? modelContext.fetch(fetch)) ?? [] {
+            switch entity.status {
+            case .sent:
+                entity.status = .delivered
+                changed = true
+            case .delivered:
+                entity.status = .read
+                changed = true
+            default:
+                break
+            }
+        }
+        if changed {
+            try? modelContext.save()
+            os_log("[Repo] implicit receipts conv=%{public}@ -> delivered/read", log: xmppLog, type: .debug, convId)
+        }
     }
 
     private func updateConversationPreview(_ message: Message, incrementUnread: Bool = true) {
@@ -110,6 +172,10 @@ final class XMPPMessageRepository: MessageRepository {
         let entity = MessageEntity(from: message)
         entity.isEncrypted = shouldEncrypt
         modelContext.insert(entity)
+        // Eco local inmediato: el chat abierto muestra el mensaje al instante
+        // (estado `.sending`) sin esperar el round-trip de red. El estado
+        // final llega por la recarga posterior o por los receipts (XEP-0184).
+        messageContinuation.yield(entity.toDomain())
         do {
             try await sendOnce(entity: entity, omemo: shouldEncrypt)
             entity.status = .sent
@@ -182,6 +248,7 @@ final class XMPPMessageRepository: MessageRepository {
             for await isAuthenticated in await client.authStateStream {
                 if isAuthenticated {
                     await self.flushPendingOutbox()
+                    removeMAMDuplicateLegacyCopies()
                     try? await self.syncRecentMessages(limit: 20)
                 }
             }
@@ -375,6 +442,7 @@ final class XMPPMessageRepository: MessageRepository {
     /// Tombstones de ids retractados: evitan que un mensaje borrado "vuelva a
     /// la vida" desde el archivo MAM en la próxima sincronización.
     private static let retractedIDsKey = "retracted_message_ids"
+    private static let mamCleanupKey = "did_remove_mam_duplicate_copies_v1"
 
     private func startRetractionListening() {
         Task { [weak self] in
@@ -426,6 +494,31 @@ final class XMPPMessageRepository: MessageRepository {
 
     private func isTombstoned(_ id: String) -> Bool {
         (UserDefaults.standard.stringArray(forKey: Self.retractedIDsKey) ?? []).contains(id)
+    }
+
+    /// Limpieza única: antes del fix de `extractAttributes`, los catch-up MAM
+    /// importaban copias cuyo `id` quedó como id del archivo (16 dígitos de
+    /// ejabberd) en vez del id original, duplicando el mensaje. Si esa copia
+    /// tiene un gemelo real (misma conversación, texto, dirección y timestamp
+    /// cercano), se borra; las copias únicas (p. ej. recibidas solo offline)
+    /// se conservan.
+    private func removeMAMDuplicateLegacyCopies() {
+        guard !UserDefaults.standard.bool(forKey: Self.mamCleanupKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.mamCleanupKey)
+        let archiveIDPattern = #"^\d{16}$"#
+        guard let all = try? modelContext.fetch(FetchDescriptor<MessageEntity>()) else { return }
+        let doomed = all.filter { entity in
+            guard entity.id.range(of: archiveIDPattern, options: .regularExpression) != nil else { return false }
+            return all.contains { other in
+                other !== entity
+                    && other.conversationId == entity.conversationId
+                    && other.text == entity.text
+                    && other.isOutgoing == entity.isOutgoing
+                    && abs(other.timestamp.timeIntervalSince(entity.timestamp)) <= 180
+            }
+        }
+        for entity in doomed { modelContext.delete(entity) }
+        if !doomed.isEmpty { try? modelContext.save() }
     }
 
     /// Retracta un mensaje propio: avisa al servidor, borra local e inscribe

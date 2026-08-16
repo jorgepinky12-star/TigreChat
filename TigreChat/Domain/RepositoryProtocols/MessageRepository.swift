@@ -8,6 +8,10 @@ enum MessageError: Error, Sendable {
 
 @MainActor
 protocol MessageRepository: Sendable {
+    /// Stream en vivo: mensajes entrantes, ecos de envíos y cambios de estado
+    /// (receipts). La lista y el chat abierto se suscriben para refrescar sin
+    /// depender de recargas manuales ni de salir y volver a entrar.
+    var messageStream: AsyncStream<Message> { get }
     /// Envía un mensaje y devuelve si salió realmente cifrado (false si se
     /// degradó a texto plano porque OMEMO no pudo cifrar).
     @discardableResult

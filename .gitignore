@@ -15,6 +15,9 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 
+# Build local (xcodebuild -derivedDataPath build)
+build/
+
 # Xcode — schemes y workspaces de usuario
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/

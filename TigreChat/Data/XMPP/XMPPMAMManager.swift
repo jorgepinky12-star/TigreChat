@@ -248,12 +248,20 @@ actor XMPPMAMManager {
         var attributes: [String: String] = [:]
         let pattern = "([a-zA-Z0-9_:-]+)='([^']*)'"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return attributes }
-        let range = NSRange(location: 0, length: (xml as NSString).length)
-        regex.enumerateMatches(in: xml, range: range) { match, _, _ in
+        // Solo la ETIQUETA RAÍZ: ejabberd inyecta en el mensaje archivado los
+        // elementos `<archived id='...'>` y `<stanza-id id='...'>` con el id del
+        // archivo (16 dígitos). Si se barre el XML completo, esos `id` anidados
+        // sobrescriben el id real del mensaje y el deduplicado por id del
+        // catch-up MAM falla → cada sync reinserta mensajes duplicados
+        // (tanto salientes como entrantes).
+        guard let tagEnd = xml.firstIndex(of: ">") else { return attributes }
+        let openTag = String(xml[xml.startIndex..<tagEnd])
+        let range = NSRange(location: 0, length: (openTag as NSString).length)
+        regex.enumerateMatches(in: openTag, range: range) { match, _, _ in
             guard let match,
-                  let keyRange = Range(match.range(at: 1), in: xml),
-                  let valueRange = Range(match.range(at: 2), in: xml) else { return }
-            attributes[String(xml[keyRange])] = String(xml[valueRange])
+                  let keyRange = Range(match.range(at: 1), in: openTag),
+                  let valueRange = Range(match.range(at: 2), in: openTag) else { return }
+            attributes[String(openTag[keyRange])] = String(openTag[valueRange])
         }
         return attributes
     }

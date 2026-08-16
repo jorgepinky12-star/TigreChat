@@ -26,6 +26,11 @@ final class ChatListViewModel {
     private let authRepository: AuthRepository
     private let groupRepository: GroupRepository?
     private var messageListenerTask: Task<Void, Never>?
+    /// Último catch-up MAM: se limita a uno cada 2 s para que los eventos del
+    /// stream (cada mensaje entrante/eco) no disparen un fetch MAM por red por
+    /// evento (y, con el yield de duplicados, no se convierta en un bucle de
+    /// sync que satura el main actor y retrasa el repintado del chat abierto).
+    private var lastMAMSync = Date.distantPast
 
     init(
         loadConversations: LoadConversationsUseCase,
@@ -59,7 +64,8 @@ final class ChatListViewModel {
             // Catch-up XEP-0313: con conexión, trae los mensajes archivados
             // recientes (dedupe por id, sin tocar no leídos). En demo/offline
             // falla silencioso (try?).
-            if isConnected {
+            if isConnected, Date().timeIntervalSince(lastMAMSync) > 2 {
+                lastMAMSync = Date()
                 try? await messageRepository.syncRecentMessages()
                 conversations = try await loadConversations.execute()
                 conversations.sort { ($0.lastTimestamp ?? .distantPast) > ($1.lastTimestamp ?? .distantPast) }
@@ -76,6 +82,7 @@ final class ChatListViewModel {
         messageListenerTask = Task { [weak self] in
             guard let self else { return }
             for await _ in messageRepository.messageStream {
+                os_log("[List] stream event -> reload", log: xmppLog, type: .debug)
                 await loadConversations()
             }
         }
