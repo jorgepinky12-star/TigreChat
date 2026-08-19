@@ -7,11 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA90D6223036538F00D671C6 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FC0DEDEC0DE00000000000A1 /* WebRTC.xcframework */; };
 		AAC14EF730290EDD00943B1B /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 497C4F626B6F22AD8FAB64CD /* SwiftProtobuf */; };
 		AAC2EBA4302AA37B00973927 /* NIO in Frameworks */ = {isa = PBXBuildFile; productRef = 3A4B5C6D7E8F9012A3B4C5D6 /* NIO */; };
 		AAC2EBA5302AA37B00973927 /* NIOEmbedded in Frameworks */ = {isa = PBXBuildFile; productRef = 4A5B6C7D8E9F0123A4B5C6D7 /* NIOEmbedded */; };
 		AAC2EBA6302AA37B00973927 /* NIOTLS in Frameworks */ = {isa = PBXBuildFile; productRef = 5A6B7C8D9E0F1234A5B6C7D8 /* NIOTLS */; };
 		AAC2EBA7302AA37B00973927 /* NIOSSL in Frameworks */ = {isa = PBXBuildFile; productRef = 6A7B8C9D0E1F2345A6B7C8D9 /* NIOSSL */; };
+		FC0DEDEC0DE00000000000B1 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC0DEDEC0DE00000000000A1 /* WebRTC.xcframework */; };
+		FC0DEDEC0DE00000000000B2 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC0DEDEC0DE00000000000A1 /* WebRTC.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -31,10 +34,25 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		FC0DEDEC0DE00000000000D1 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AA90D6223036538F00D671C6 /* WebRTC.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		AA8CC44E2FD5F03E00DD6979 /* TigreChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TigreChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA8CC45D2FD5F04000DD6979 /* TigreChatTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TigreChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA8CC4672FD5F04000DD6979 /* TigreChatUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TigreChatUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC0DEDEC0DE00000000000A1 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = WebRTC.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -65,6 +83,7 @@
 				AAC2EBA5302AA37B00973927 /* NIOEmbedded in Frameworks */,
 				AAC2EBA4302AA37B00973927 /* NIO in Frameworks */,
 				AAC14EF730290EDD00943B1B /* SwiftProtobuf in Frameworks */,
+				FC0DEDEC0DE00000000000B1 /* WebRTC.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -72,6 +91,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FC0DEDEC0DE00000000000B2 /* WebRTC.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +112,7 @@
 				AA8CC4602FD5F04000DD6979 /* TigreChatTests */,
 				AA8CC46A2FD5F04000DD6979 /* TigreChatUITests */,
 				AA8CC44F2FD5F03E00DD6979 /* Products */,
+				FC0DEDEC0DE00000000000C1 /* Vendor */,
 			);
 			sourceTree = "<group>";
 		};
@@ -105,6 +126,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		FC0DEDEC0DE00000000000C1 /* Vendor */ = {
+			isa = PBXGroup;
+			children = (
+				FC0DEDEC0DE00000000000A1 /* WebRTC.xcframework */,
+			);
+			path = Vendor;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -114,6 +143,7 @@
 			buildPhases = (
 				AA8CC44A2FD5F03E00DD6979 /* Sources */,
 				AA8CC44B2FD5F03E00DD6979 /* Frameworks */,
+				FC0DEDEC0DE00000000000D1 /* Embed Frameworks */,
 				AA8CC44C2FD5F03E00DD6979 /* Resources */,
 			);
 			buildRules = (
