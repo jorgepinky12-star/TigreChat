@@ -743,6 +743,14 @@ private var messageContinuation: AsyncStream<Message>.Continuation?
         }
     }
 
+    /// Enruta un IQ jingle al JingleManager. Devuelve `true` si el IQ
+    /// pertenecía a jingle (consumido) y `false` si debe seguir el pipeline.
+    private func routeJingleIfConsumed(_ stanza: IQStanza) async -> Bool {
+        guard stanza.rawXML.contains("urn:xmpp:jingle:1") else { return false }
+        await jingleManager.handleJingleStanza(xml: stanza.rawXML)
+        return true
+    }
+
     /// Maneja IQ entrantes que no responden a ninguna petición local.
     private func handleUnsolicitedIQ(_ stanza: IQStanza) async {
         // MAM (XEP-0313): cierre de una query de archivo (IQ result con <fin>).
@@ -750,11 +758,12 @@ private var messageContinuation: AsyncStream<Message>.Continuation?
             await mamManager.handleResult(iqID: stanza.id)
             return
         }
-        // Jingle: session-initiate/accept/terminate entrantes
-        if stanza.rawXML.contains("urn:xmpp:jingle:1") {
-            await jingleManager.handleJingleStanza(xml: stanza.rawXML)
-            return
-        }
+        // Jingle (XEP-0166): session-initiate/accept/terminate/transport-info.
+        // 1) Pre-filtro barato: el IQ trae el namespace jingle.
+        // 2) JingleManager.parse valida el XML real y despacha por action.
+        // 3) REQ-JINGLE-001: stanzas malformadas o de sesión desconocida se
+        //    ignoran en silencio dentro del manager, sin mutar estado.
+        guard await routeJingleIfConsumed(stanza) else { return }
         // Roster push (RFC 6121 §2.1.6): el servidor notifica cambios de roster
         if stanza.type == .set, stanza.rawXML.contains("jabber:iq:roster") {
             // El push también lleva el ver vigente: persistirlo (XEP-0237).

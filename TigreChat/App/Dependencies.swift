@@ -56,7 +56,12 @@ final class Dependencies {
         messageRepository = msgRepo
         contactRepository = contactRepo
         groupRepository = groupRepo
-        callRepository = XMPPCallRepository(jingleManager: client.jingleManager, webRTC: engine, callKit: cm)
+        callRepository = XMPPCallRepository(
+            jingleManager: client.jingleManager,
+            webRTC: engine,
+            callKit: cm,
+            localJIDProvider: { await client.currentJID }
+        )
 
         let km = MainActor.assumeIsolated { KeyManager() }
         keyManager = km

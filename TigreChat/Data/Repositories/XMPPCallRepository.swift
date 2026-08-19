@@ -8,11 +8,19 @@ actor XMPPCallRepository: CallRepository {
     private(set) var currentCall: Call?
     private var callContinuation: AsyncStream<Call>.Continuation?
     nonisolated let callStateStream: AsyncStream<Call>
+    /// Provee el JID local en el momento de llamar (se fija tras login).
+    private let localJIDProvider: @Sendable () async -> String?
 
-    init(jingleManager: JingleManager, webRTC: WebRTCEngineProtocol, callKit: CallManager) {
+    init(
+        jingleManager: JingleManager,
+        webRTC: WebRTCEngineProtocol,
+        callKit: CallManager,
+        localJIDProvider: @escaping @Sendable () async -> String? = { nil }
+    ) {
         self.jingleManager = jingleManager
         self.webRTC = webRTC
         self.callKit = callKit
+        self.localJIDProvider = localJIDProvider
         var cont: AsyncStream<Call>.Continuation?
         callStateStream = AsyncStream { continuation in cont = continuation }
         callContinuation = cont
@@ -43,8 +51,9 @@ actor XMPPCallRepository: CallRepository {
     }
 
     private func listenForIncomingJingle() async {
-        for await (sid, initiator, sdp) in jingleManager.incomingCallStream {
-            let call = Call(jid: initiator, direction: .incoming, isVideo: sdp.contains("video"))
+        for await (sid, initiator, stanza) in jingleManager.incomingCallStream {
+            let isVideo = stanza.contents.contains { $0.media == "video" }
+            let call = Call(jid: initiator, direction: .incoming, isVideo: isVideo)
             currentCall = call
             await MainActor.run {
                 callKit.onAnswer = { [weak self] _ in
@@ -61,7 +70,14 @@ actor XMPPCallRepository: CallRepository {
         currentCall = call
         let uuid = UUID()
 
-        try await jingleManager.sendSessionInitiate(to: jid, sid: call.id, sdp: "", isVideo: isVideo)
+        try await jingleManager.sendSessionInitiate(
+            localJID: await localJIDProvider() ?? "",
+            to: jid,
+            sid: call.id,
+            sdp: "",
+            fingerprint: "",
+            isVideo: isVideo
+        )
 
         await MainActor.run {
             callKit.startCall(uuid: uuid, jid: jid, isVideo: isVideo)
@@ -88,7 +104,13 @@ actor XMPPCallRepository: CallRepository {
         currentCall = updated
 
         let sdp = try await webRTC.createAnswer(for: SessionDescription(sdp: "", type: .offer))
-        try await jingleManager.sendSessionAccept(to: call.jid, sid: call.id, sdp: sdp.sdp)
+        try await jingleManager.sendSessionAccept(
+            localJID: await localJIDProvider() ?? "",
+            to: call.jid,
+            sid: call.id,
+            sdp: sdp.sdp,
+            fingerprint: ""
+        )
         await MainActor.run { callKit.reportOutgoingCallConnected(uuid: UUID()) }
 
         updated.state = .connected
@@ -99,7 +121,7 @@ actor XMPPCallRepository: CallRepository {
 
     func endCall(_ call: Call) async throws {
         guard currentCall?.id == call.id else { return }
-        try await jingleManager.sendSessionTerminate(to: call.jid, sid: call.id)
+        try await jingleManager.sendSessionTerminate(to: call.jid, sid: call.id, reason: "success")
         await MainActor.run { webRTC.disconnect() }
         await MainActor.run { callKit.endCall() }
 
@@ -143,7 +165,14 @@ actor XMPPCallRepository: CallRepository {
     private func handleOutgoingCallStarted(jid: String) async {
         let call = Call(jid: jid, direction: .outgoing)
         currentCall = call
-        try? await jingleManager.sendSessionInitiate(to: jid, sid: call.id, sdp: "", isVideo: false)
+        try? await jingleManager.sendSessionInitiate(
+            localJID: await localJIDProvider() ?? "",
+            to: jid,
+            sid: call.id,
+            sdp: "",
+            fingerprint: "",
+            isVideo: false
+        )
     }
 }
 

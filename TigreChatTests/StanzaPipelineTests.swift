@@ -11,9 +11,15 @@ final class StanzaPipelineTests: XCTestCase {
     private final class Collector: @unchecked Sendable {
         private let lock = NSLock()
         private var _stanzas: [MessageStanza] = []
-        func add(_ stanza: MessageStanza) {
+        private var _raws: [String] = []
+        func addMessage(_ stanza: MessageStanza) {
             lock.lock()
             _stanzas.append(stanza)
+            lock.unlock()
+        }
+        func addRaw(_ rawXML: String) {
+            lock.lock()
+            _raws.append(rawXML)
             lock.unlock()
         }
         var stanzas: [MessageStanza] {
@@ -21,13 +27,21 @@ final class StanzaPipelineTests: XCTestCase {
             defer { lock.unlock() }
             return _stanzas
         }
+        var raws: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _raws
+        }
     }
 
     private func makeParser(_ collector: Collector) async -> XMPPStanzaParser {
         let parser = XMPPStanzaParser()
         await parser.setStanzaCallback { stanza in
+            // El raw XML de TODA stanza (message, iq, presence) importa para la
+            // ruta jingle; los mensajes además alimentan las aserciones de texto.
+            collector.addRaw(stanza.xml)
             if case .message(let msg) = stanza {
-                collector.add(msg)
+                collector.addMessage(msg)
             }
         }
         return parser
@@ -86,5 +100,25 @@ final class StanzaPipelineTests: XCTestCase {
         XCTAssertEqual(stanzas.count, 1)
         XCTAssertEqual(stanzas[0].id, "m-delay")
         XCTAssertEqual(stanzas[0].timestamp?.timeIntervalSince1970 ?? 0, 1_786_788_000, accuracy: 2.0)
+    }
+
+    /// Ruta jingle: un IQ session-initiate partido en dos chunks se reconstruye
+    /// completo — es la entrada de `handleUnsolicitedIQ`, que despacha por
+    /// `rawXML.contains("urn:xmpp:jingle:1")`. El borde de buffer no debe
+    /// romper la condición de ruta ni mutilar el XML.
+    func testJingleIQSplitAcrossChunksIsReassembled() async throws {
+        let collector = Collector()
+        let parser = await makeParser(collector)
+
+        let first = "<iq to='juliet@capulet.com/balcony' id='jingle-f' type='set'><jingle xmlns='urn:xmpp:jingle:1' action='session-ini"
+        let second = "tiate' sid='jingle-f'/></iq>"
+        await parser.appendData(first.data(using: .utf8)!)
+        XCTAssertEqual(collector.raws.count, 0, "IQ incompleto no debe entregarse")
+        await parser.appendData(second.data(using: .utf8)!)
+
+        let raw = try XCTUnwrap(collector.raws.first)
+        XCTAssertTrue(raw.contains("urn:xmpp:jingle:1"), "la routing condition debe sobrevivir al split")
+        XCTAssertTrue(raw.contains("action='session-initiate'"))
+        XCTAssertTrue(raw.contains("id='jingle-f'"))
     }
 }
