@@ -50,6 +50,10 @@ protocol WebRTCEngineDelegate: AnyObject, Sendable {
 protocol WebRTCEngineProtocol: AnyObject, Sendable {
     var delegate: WebRTCEngineDelegate? { get set }
 
+    /// Huella DTLS-SRTP local (XEP-0320) que viaja en session-initiate/accept.
+    /// `nil` si el engine aún no derivó su certificado (fail-closed del gate).
+    func localDTLSFingerprint() async -> String?
+
     func createOffer() async throws -> SessionDescription
     func createAnswer(for remoteSDP: SessionDescription) async throws -> SessionDescription
     func setRemoteDescription(_ sdp: SessionDescription) async throws

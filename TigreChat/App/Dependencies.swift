@@ -14,6 +14,8 @@ final class Dependencies {
     let callManager: CallManager
     let webRTCEngine: MockWebRTCEngine
     let callRepository: XMPPCallRepository
+    let historyStore: CallHistoryStore
+    let fingerprintStore: FingerprintStore
     let keyManager: KeyManager
     let omemoModule: OMEMOModule
 
@@ -22,6 +24,10 @@ final class Dependencies {
             MessageEntity.self,
             ConversationEntity.self,
             ContactEntity.self,
+            // M3 (voip-calls): entidades aditivas, sin migración — solo se
+            // añaden tipos nuevos; los modelos existentes quedan intactos.
+            CallHistoryEntry.self,
+            FingerprintEntity.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         let container: ModelContainer
@@ -42,13 +48,15 @@ final class Dependencies {
         // to the main actor for UI-bound persistence). Dependencies() is only
         // created as an EnvironmentValues default from a View context, which
         // runs on the main actor, so the assumption is safe.
-        let (cm, engine, msgRepo, contactRepo, groupRepo) = MainActor.assumeIsolated {
+        let (cm, engine, msgRepo, contactRepo, groupRepo, callHistoryStore, fpStore) = MainActor.assumeIsolated {
             (
                 CallManager(),
                 MockWebRTCEngine(),
                 XMPPMessageRepository(client: client, modelContainer: container),
                 XMPPContactRepository(client: client, modelContainer: container),
-                XMPPGroupRepository(mucManager: client.mucManager, modelContainer: container)
+                XMPPGroupRepository(mucManager: client.mucManager, modelContainer: container),
+                CallHistoryStore(modelContainer: container),
+                FingerprintStore(modelContainer: container)
             )
         }
         callManager = cm
@@ -56,10 +64,14 @@ final class Dependencies {
         messageRepository = msgRepo
         contactRepository = contactRepo
         groupRepository = groupRepo
+        historyStore = callHistoryStore
+        fingerprintStore = fpStore
         callRepository = XMPPCallRepository(
             jingleManager: client.jingleManager,
             webRTC: engine,
             callKit: cm,
+            historyStore: callHistoryStore,
+            fingerprintStore: fpStore,
             localJIDProvider: { await client.currentJID }
         )
 

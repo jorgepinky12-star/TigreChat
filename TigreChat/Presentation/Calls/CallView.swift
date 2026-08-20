@@ -39,6 +39,10 @@ struct CallView: View {
 
                 if viewModel.call?.state == .connected || viewModel.call?.state == .connecting {
                     activeCallControls
+                } else if viewModel.call?.state == .needsVerification {
+                    // M5: pausa TOFU — el gate está cerrado; el sheet de
+                    // verificación sustituirá estos controles.
+                    EmptyView()
                 } else if isIncoming {
                     incomingCallControls
                 } else {
@@ -66,6 +70,7 @@ struct CallView: View {
         case .connecting: Text("Connecting...")
         case .connected: Text(viewModel.formattedDuration)
         case .reconnecting: Text("Reconnecting...")
+        case .needsVerification: Text("Verify fingerprint...")
         case .ended: Text("Call ended")
         case .failed: Text("Call failed")
         case .missed: Text("Missed call")

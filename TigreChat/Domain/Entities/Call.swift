@@ -31,6 +31,10 @@ enum CallState: String, Sendable {
     case connecting
     case connected
     case reconnecting
+    /// TOFU (REQ-JINGLE-011): primer contacto con el JID, la huella DTLS
+    /// remota aún no está verificada. La llamada queda en pausa hasta que
+    /// el usuario acepta la huella (`acceptFingerprint`) o se rechaza.
+    case needsVerification
     case ended
     case failed
     case missed

@@ -87,6 +87,13 @@ final class CallManager: NSObject {
         provider.reportOutgoingCall(with: uuid, connectedAt: Date())
     }
 
+    /// El remoto/otro extremo terminó la llamada: el sistema la da por
+    /// finalizada sin acción de usuario (arsenal del seam D7).
+    func reportRemoteEnded(uuid: UUID) {
+        provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+        if activeCallUUID == uuid { activeCallUUID = nil }
+    }
+
     func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP])
@@ -101,6 +108,10 @@ final class CallManager: NSObject {
         }
     }
 }
+
+// MARK: - Seam CallKit (D7 del diseño, M2)
+
+extension CallManager: CallKitAdapting {}
 
 // MARK: - CXProviderDelegate
 
