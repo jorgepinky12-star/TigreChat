@@ -8,6 +8,9 @@ struct Call: Identifiable, Hashable, Sendable {
     var isVideo: Bool
     var duration: TimeInterval
     var startTime: Date?
+    /// REQ-JINGLE-011: huella DTLS remota para el gate TOFU.
+    /// `nil` antes de presentar; se llena con el valor del stanza.
+    var fingerprint: String?
 
     init(id: String = UUID().uuidString, jid: String, direction: CallDirection, isVideo: Bool = false) {
         self.id = id
