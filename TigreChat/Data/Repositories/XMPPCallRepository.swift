@@ -122,7 +122,9 @@ actor XMPPCallRepository: CallRepository {
         let stored = await fingerprintStore.storedFingerprint(for: bare)
         guard let stored else {
             // TOFU: primer contacto → pausa de verificación, sin ring ni media.
-            var pending = Call(jid: bare, direction: .incoming, isVideo: false)
+            // El id del Call ES el sid del wire (igual que en el ring): los
+            // guards de candidate/terminate/accept comparan call.id == sid.
+            var pending = Call(id: event.sid, jid: bare, direction: .incoming, isVideo: false)
             pending.state = .needsVerification
             currentCall = pending
             pendingIncoming = PendingIncoming(
@@ -147,7 +149,10 @@ actor XMPPCallRepository: CallRepository {
     }
 
     private func ringIncoming(event: (sid: String, initiator: String, stanza: JingleStanza), remoteOfferSDP: String, bare: String) async {
-        var call = Call(jid: bare, direction: .incoming, isVideo: false)
+        // id = sid del wire: `handleIncomingCandidate`/`handleRemoteTerminate`
+        // comparan `call.id == event.sid` (bug M4: el Call se creaba con UUID
+        // aleatorio y el candidate entrante nunca llegaba al engine).
+        var call = Call(id: event.sid, jid: bare, direction: .incoming, isVideo: false)
         call.state = .ringing
         currentCall = call
         pendingRemoteSDP = remoteOfferSDP
@@ -384,7 +389,8 @@ actor XMPPCallRepository: CallRepository {
         pendingRemoteSDP = pending.remoteOfferSDP
         try? await webRTC.setRemoteDescription(SessionDescription(sdp: pending.remoteOfferSDP, type: .offer))
 
-        var call = Call(jid: pending.jid, direction: .incoming, isVideo: false)
+        // Mismo contrato que ringIncoming: id = sid del wire.
+        var call = Call(id: pending.sid, jid: pending.jid, direction: .incoming, isVideo: false)
         call.state = .ringing
         currentCall = call
         activeUUID = pending.uuid

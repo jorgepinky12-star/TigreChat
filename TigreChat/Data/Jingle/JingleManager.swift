@@ -72,7 +72,14 @@ actor JingleManager {
         self.sleeper = sleeper
         self.ringTimeout = ringTimeout
         var cont: AsyncStream<(sid: String, initiator: String, stanza: JingleStanza)>.Continuation?
-        incomingCallStream = AsyncStream { continuation in cont = continuation }
+        // Buffered: el consumidor (repo) procesa un evento mientras el manager
+        // puede emitir el siguiente (ráfaga initiate + transport-info/busy);
+        // con unbuffered el yield se descarta cuando el escucha está ocupado
+        // y el evento se pierde en silencio (run M4: candidate que no llega al
+        // engine, busy que no llega al historial).
+        incomingCallStream = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            cont = continuation
+        }
         incomingContinuation = cont
     }
 
