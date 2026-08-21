@@ -17,7 +17,7 @@ final class CallManager: NSObject {
     var onStartCall: ((UUID, String) -> Void)?
 
     var hasPendingCall: Bool { activeCallUUID != nil }
-    private var activeCallUUID: UUID?
+    internal var activeCallUUID: UUID?
     private var callCompletion: ((Bool) -> Void)?
 
     override init() {
